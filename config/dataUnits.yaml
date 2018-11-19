@@ -79,20 +79,15 @@ dataUnits:
       link:
       - exposure
 
-    ExposureRange:
+    CalibIdentifier:
       dependencies:
         required:
-        - Instrument
+          - Instrument
       doc: >
-        An inclusive range of Exposure dates that may be open in either
-        direction, typically used to identify master calibration products.
-        There is no SQL table associated with ExposureRanges; there is no
-        additional information associated with an ExposureRange besides the
-        instrument, valid_first, and valid_last fields already present in
-        Dataset.
+        An identifier for one or more master calibrations with the same
+        validity range.
       link:
-      - valid_first
-      - valid_last
+        - calib_identifier
 
     SkyPix:
       doc: >
@@ -165,16 +160,14 @@ dataUnits:
       rhs: [Detector]
       spatial: true
 
-    ExposureRangeJoin:
+    CalibIdentifierExposureJoin:
       doc: >
-        A calculated join between Datasets identified with an Exposure
-        (typically raw science frames) and Datasets identified with
-        ExposureRange (typically master calibrations).
-      lhs: [Exposure]
-      rhs: [ExposureRange]
-      sql:
-        (lhs.instrument = rhs.instrument) AND
-        (lhs.datetime_begin BETWEEN rhs.valid_first AND rhs.valid_last)
+        An inclusive range of Exposure timestamps that may be open in either
+        direction, used to associate master calibration products with raw
+        observations.
+      lhs: [CalibIdentifier]
+      rhs: [Exposure]
+
     MultiInstrumentExposureJoin:
       doc: >
         A join table that relates Exposures from different Instruments, with

@@ -54,7 +54,7 @@ class DataUnitRegistryTestCase(lsst.utils.tests.TestCase):
                                {'Patch', 'Tract'}, {'Detector', 'Visit'}])
         self.assertEqual(len(dataUnitRegistry.joins), 11)
         joins = ((['Exposure'], ['Exposure']),
-                 (['Exposure'], ['ExposureRange']),
+                 (['CalibIdentifier'], ['Exposure']),
                  (['Patch'], ['SkyPix']),
                  (['Detector', 'Visit'], ['Patch']),
                  (['Detector', 'Visit'], ['SkyPix']),

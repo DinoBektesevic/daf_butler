@@ -52,17 +52,8 @@ schema:
         name: exposure
         type: int
       -
-        name: valid_first
-        type: datetime
-        doc: >
-          TAI timestamp of first exposure included in the range (inclusive).
-          May be far in the past to indicate an open interval.
-      -
-        name: valid_last
-        type: datetime
-        doc: >
-          TAI timestamp of last exposure included in the range (inclusive).
-          May be far in the future to indicate an open interval.
+        name: calib_identifier
+        type: string
       -
         name: skypix
         type: int
@@ -704,6 +695,36 @@ schema:
         - PhysicalFilter.instrument
         - PhysicalFilter.physical_filter
 
+    CalibIdentifier:
+      doc: >
+        A table that associates CalibIdentifiers with their validity ranges.
+      limited: false
+      columns:
+      -
+        name: instrument
+        type: int
+        doc: The Instrumemnt this CalibIdentifier is associated with.
+      -
+        name: calib_identifier
+        type: string
+        doc: The CalibIdentifier associated with this range.
+      -
+        name: valid_begin
+        type: datetime
+        doc: >
+          TAI timestamp of first exposure included in the range (inclusive).
+          May be far in the past to indicate an open interval.
+      -
+        name: valid_end
+        type: datetime
+        doc: >
+          TAI timestamp of last exposure included in the range (inclusive).
+          May be far in the future to indicate an open interval.
+      foreignKeys:
+      -
+        src: instrument
+        tgt: Instrument.instrument
+
     SkyMap:
       doc: >
         A table containing registered SkyMaps and the the SHA1 hashes
@@ -1287,4 +1308,51 @@ schema:
           VisitSkyPixJoin INNER JOIN TractSkyPixJoin ON (
             VisitSkyPixJoin.skypix = TractSkyPixJoin.skypix
           );
+      materialize: false
+
+    CalibIdentifierExposureJoin:
+      limited: false
+      columns:
+      -
+        name: instrument
+        type: string
+        nullable: false
+        doc: >
+          Name of the Instrument associated with both the CalibIdentifier and
+          the Exposure.
+      -
+        name: calib_identifier
+        type: string
+        nullable: false
+        doc: Calibration identifier string.
+      -
+        name: exposure
+        type: int
+        nullable: false
+        doc: Integer ID of the Exposure.
+      foreignKeys:
+      -
+        src:
+          - instrument
+          - calib_identifier
+        tgt:
+          - CalibIdentifier.instrument
+          - CalibIdentifier.calib_identifier
+      -
+        src:
+          - instrument
+          - exposure
+        tgt:
+          - Exposure.instrument
+          - Exposure.exposure
+      sql: >
+        SELECT
+          CalibIdentifier.instrument,
+          CalibIdentifier.calib_identifier,
+          Exposure.exposure
+        FROM CalibIdentifier INNER JOIN Exposure ON (
+          CalibIdentifier.instrument = Exposure.instrument AND
+          Exposure.datetime_begin >= CalibIdentifier.valid_begin AND
+          Exposure.datetime_end <= CalibIdentifier.valid_end
+        );
       materialize: false

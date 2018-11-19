@@ -22,15 +22,11 @@
 __all__ = ("SqlPreFlight")
 
 import itertools
-import logging
-from sqlalchemy.sql import select, and_, functions, text, literal, case, between
+from sqlalchemy.sql import select, and_, functions, text, literal, case
 
 from lsst.sphgeom import Region
 from lsst.sphgeom.relationship import DISJOINT
 from lsst.daf.butler import DatasetRef, PreFlightUnitsRow
-
-
-_LOG = logging.getLogger(__name__)
 
 
 def _scanDataUnits(dataUnits):
@@ -117,11 +113,12 @@ class SqlPreFlight:
         fromClause : `sqlalchemy.FromClause`
             May be `None`, in that case ``otherDataUnits`` is expected to be
             empty and is ignored.
-        dataUnit : `DataUnit`
-            DataUnit to join with ``fromClause``.
-        otherDataUnits : iterable of `DataUnit`
-            DataUnits whose tables have PKs for ``dataUnit`` table's FK. They all
-            have to be in ``fromClause`` already.
+        dataUnit : `DataUnit` or `DataUnitJoin`
+            DataUnit or DataUnitJoin to join with ``fromClause``.
+        otherDataUnits : iterable of `DataUnit` and/or `DataUnitJoin`
+            DataUnits and/or DataUnitJoins whose tables have PKs for
+            ``dataUnit`` table's FK. They all have to be in ``fromClause``
+            already.
 
         Returns
         -------
@@ -264,7 +261,7 @@ class SqlPreFlight:
             # Look at each side of the DataUnitJoin and join it with
             # corresponding DataUnit tables, including making all necessary
             # joins for special multi-DataUnit region table(s).
-            regionHolders = []
+            otherDataUnits = []
             for connection in (dataUnitJoin.lhs, dataUnitJoin.rhs):
                 # For DataUnits like Patch we need to extend list with their required
                 # units which are also spatial.
@@ -275,35 +272,42 @@ class SqlPreFlight:
                     units += [d.name for d in dataUnit.requiredDependencies if d.spatial]
                 try:
                     regionHolder = self._dataUnits.getRegionHolder(*units)
+                    hasRegion = True
                 except KeyError:
-                    # means there is no region for these units, want to skip it
-                    _LOG.debug("Units %s are not spatial, skipping", units)
-                    break
-                if len(connection) > 1:
-                    # if one of the joins is with Visit/Detector then also bring
-                    # VisitDetectorRegion table in and join it with the units
-                    # TODO: need a better way to recognize this special case
-                    if regionHolder.name in joinedRegionTables:
-                        _LOG.debug("region table already joined with units: %s", regionHolder.name)
-                    else:
-                        _LOG.debug("joining region table with units: %s", regionHolder.name)
-                        joinedRegionTables.add(regionHolder.name)
+                    _LOG.debug("Units %s are not spatial; not adding region", units)
+                    hasRegion = False
 
-                        dataUnits = [self._dataUnits[dataUnitName] for dataUnitName in connection]
-                        fromJoin = self._joinOnForeignKey(fromJoin, regionHolder, dataUnits)
+                if hasRegion:
+                    if len(connection) > 1:
+                        # if one of the joins is with Visit/Detector then also bring
+                        # VisitDetectorRegion table in and join it with the units
+                        # TODO: need a better way to recognize this special case
+                        if regionHolder.name in joinedRegionTables:
+                            _LOG.debug("region table already joined with units: %s", regionHolder.name)
+                        else:
+                            _LOG.debug("joining region table with units: %s", regionHolder.name)
+                            joinedRegionTables.add(regionHolder.name)
 
-                # add to the list of tables that we need to join with
-                regionHolders.append(regionHolder)
+                            dataUnits = [self._dataUnits[dataUnitName] for dataUnitName in connection]
+                            fromJoin = self._joinOnForeignKey(fromJoin, regionHolder, dataUnits)
 
-                # We also have to include regions from each side of the join
-                # into resultset so that we can filter-out non-overlapping
-                # regions.
-                regionColumns[regionHolder.name] = len(selectColumns)
-                regionColumn = self._schema.tables[regionHolder.name].c.region
-                selectColumns.append(regionColumn)
+                    # add to the list of tables that we need to join with
+                    otherDataUnits.append(regionHolder)
 
-            if regionHolders:
-                fromJoin = self._joinOnForeignKey(fromJoin, dataUnitJoin, regionHolders)
+                    # We also have to include regions from each side of the join
+                    # into resultset so that we can filter-out non-overlapping
+                    # regions.
+                    regionColumns[regionHolder.name] = len(selectColumns)
+                    regionColumn = self._schema.tables[regionHolder.name].c.region
+                    selectColumns.append(regionColumn)
+
+                else:  # join connection has no region
+                    for dataUnitName in connection:
+                        otherDataUnits.append(self._dataUnits[dataUnitName])
+
+            if otherDataUnits:
+                _LOG.debug("adding join table: %s", dataUnitJoin.name)
+                fromJoin = self._joinOnForeignKey(fromJoin, dataUnitJoin, otherDataUnits)
 
         # join with input datasets to restrict to existing inputs
         dsIdColumns = {}
@@ -328,23 +332,9 @@ class SqlPreFlight:
             joinOn = []
             for unitName in dsType.dataUnits:
                 dataUnit = allDataUnits[unitName]
-                if unitName == "ExposureRange":
-                    # very special handling of ExposureRange
-                    # TODO: try to generalize this in some way, maybe using
-                    # sql from ExposureRangeJoin
-                    _LOG.debug("  joining on unit: %s", unitName)
-                    exposureTable = self._schema.tables["Exposure"]
-                    joinOn.append(between(exposureTable.c.datetime_begin,
-                                          subquery.c.valid_first,
-                                          subquery.c.valid_last))
-                    unitLinkColumns[dsType.name + ".valid_first"] = len(selectColumns)
-                    selectColumns.append(subquery.c.valid_first)
-                    unitLinkColumns[dsType.name + ".valid_last"] = len(selectColumns)
-                    selectColumns.append(subquery.c.valid_last)
-                else:
-                    for link in dataUnit.link:
-                        _LOG.debug("  joining on link: %s", link)
-                        joinOn.append(subquery.c[link] == self._schema.tables[dataUnit.name].c[link])
+                for link in dataUnit.link:
+                    _LOG.debug("  joining on link: %s", link)
+                    joinOn.append(subquery.c[link] == self._schema.tables[dataUnit.name].c[link])
             fromJoin = fromJoin.join(subquery, and_(*joinOn), isouter=isOutput)
 
             # remember dataset_id column index for this dataset

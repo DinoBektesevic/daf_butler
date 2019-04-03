@@ -27,6 +27,9 @@ from collections.abc import Mapping
 import contextlib
 import functools
 
+import boto3
+
+from . import utils
 from lsst.utils import doImport
 from lsst.sphgeom import ConvexPolygon
 from .config import Config, ConfigSubset
@@ -169,6 +172,25 @@ class Registry(metaclass=ABCMeta):
 
         if not isinstance(registryConfig, RegistryConfig):
             if isinstance(registryConfig, str) or isinstance(registryConfig, Config):
+                # very annoying, if s3:// is the obj store designator then
+                # db key is really nested uri's for sqlite db and s3, then it's
+                # hard to tell whether we're dealing with absolute or relative paths
+                # and all this string manipulation dependance, not best
+                db, path = registryConfig['.registry.db'].split('///')
+
+                # and then again we need to figure out where we're looking at
+                # and download if its the bucket.
+                scheme, root, relpath = utils.parsePath2Uri(path)
+                if scheme == 'file://':
+                    pass
+                elif scheme == 's3://' and utils.bucketExists(path):
+                    session = boto3.Session(profile_name='default')
+                    s3client = boto3.client('s3')
+                    # this would work for readonly butlers, but break on butler.put
+                    savepath = "/home/dinob/uni/lsstspark/simple_repo/s3_repo/gen3.sqlite3"
+                    s3client.download_file(root, relpath, savepath)
+                    # changing the config keys like this is probably bad too...
+                    registryConfig.update({'registry': {'db': db+'///'+savepath}})
                 registryConfig = RegistryConfig(registryConfig)
             else:
                 raise ValueError("Incompatible Registry configuration: {}".format(registryConfig))

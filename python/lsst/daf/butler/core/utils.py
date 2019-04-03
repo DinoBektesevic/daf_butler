@@ -23,10 +23,86 @@ __all__ = ("iterable", "allSlots", "slotValuesAreEqual", "slotValuesToHash",
            "getFullTypeName", "getInstanceOf", "Singleton", "transactional",
            "getObjectSize", "stripIfNotNone", "PrivateConstructorMeta")
 
+import os
 import sys
 import functools
+import boto3
+import urllib
+from urllib.parse import urlparse
 
 from lsst.utils import doImport
+
+
+# it would be great if this can be better
+def parsePath2Uri(path):
+    """If the path is a local filesystem path constructs elements of a URI.
+    If path is an s3:// URI returns the URI elements.
+
+    Parameters
+    ----------
+    uri : `str`
+        URI to parse.
+
+    Returns
+    -------
+    scheme : 'str'
+        Either 'file://' or 's3://'.
+    root : 'str'
+        S3 Bucket name or Posix-like path to the top of the relative path
+    relpath : 'str'
+        Posix-like path relative to roothpath.
+    """
+    parsed = urlparse(path)
+    # if the parsed path is the supplied one - filesystem
+    if parsed.path == path:
+        scheme = 'file://'
+        # bit silly if its already an abspath
+        if os.path.isabs(path):
+            root = '/'
+            relpath = parsed.path.lstrip('/')
+        else:
+            root = os.path.abspath(path).split(path)
+            relpath = path
+    elif parsed.scheme == 's3':
+        scheme = 's3://'
+        # this is the bucketname
+        root = parsed.netloc
+        relpath = parsed.path.lstrip('/')
+    else:
+        raise urllib.error.URLError(f'Can not parse path: {path}')
+
+    return scheme, root, relpath
+
+def bucketExists(uri):
+    """Check if the S3 bucket at a given URI actually exists.
+
+    Parameters
+    ----------
+    uri : `str`
+        URI of the S3 Bucket
+
+    Returns
+    -------
+    exists : `bool`
+        True if it exists, False if no Bucket with specified parameters is found.
+    """
+    session = boto3.Session(profile_name='default')
+    client = boto3.client('s3')
+    scheme, root, relpath = parsePath2Uri(uri)
+    
+    try:
+        client.get_bucket_location(Bucket=root)
+        # bucket exists, all is well
+        return True
+    except client.exceptions.NoSuchBucket:
+        return False
+
+#        # creating new buckets, generalizations hard?
+#        client.create_bucket(ACL='authenticated-read',
+#                             Bucket=bucket,
+#                             LocationConstraint = {'LocationConstraint':'us-west-2'}
+#        )
+
 
 
 def iterable(a):

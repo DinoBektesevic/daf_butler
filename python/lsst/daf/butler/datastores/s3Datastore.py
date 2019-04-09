@@ -36,44 +36,10 @@ from lsst.daf.butler import (Config, Datastore, DatastoreConfig, LocationFactory
                              FileDescriptor, FormatterFactory, FileTemplates, StoredFileInfo,
                              StorageClassFactory, DatasetTypeNotSupportedError, DatabaseDict,
                              DatastoreValidationError, FileTemplateValidationError)
-from lsst.daf.butler.core.utils import transactional, getInstanceOf
+from lsst.daf.butler.core.utils import transactional, getInstanceOf, s3CheckFileExists, parsePath2Uri
 from lsst.daf.butler.core.safeFileIo import safeMakeDir
 
 log = logging.getLogger(__name__)
-
-
-def _checkFileExists(client, bucket, filepath):
-    """Checks that the file exists and if it does returns its size.
-
-    Parameters
-    ----------
-    client : 'boto3.client'
-        S3 Client object to query.
-    bucket : 'str'
-        Name of the bucket in which to look.
-    filepath : 'str'
-        Path to file.
-    """
-    # this has maxkeys kwarg
-    response = client.list_objects_v2(
-        Bucket=bucket,
-        Prefix=filepath
-    )
-    # Hopefully multiple identical files will never exist?
-    # if not then this returns list len 1 if found, this is charged for - worth it?
-    matches = [x for x in response.get('Contents', []) if x["Key"] == filepath]
-    if len(matches) == 1:
-        return (True, matches[0]['Size'])
-    else:
-        return (False, 0)
-
-#    elif len(matches) == 0:
-#        return (False, 0)
-#    else:
-        # n
-#        pass
-        #raise FileNotFoundError(f'File {filepath} not found')
-
 
 
 class S3Datastore(Datastore):
@@ -276,7 +242,7 @@ class S3Datastore(Datastore):
 
         # Use the path to determine the location
         location = self.locationFactory.fromPath(storedFileInfo.path)
-        return _checkFileExists(self.client, self.bucket, location.path)[0]
+        return s3CheckFileExists(self.client, self.bucket, location.path)[0]
 
     def get(self, ref, parameters=None):
         """Load an InMemoryDataset from the store.
@@ -322,7 +288,7 @@ class S3Datastore(Datastore):
 
         # Too expensive to recalculate the checksum on fetch
         # but we can check size and existence
-        exists, size = _checkFileExists(self.client, self.bucket, location.path)
+        exists, size = s3CheckFileExists(self.client, self.bucket, location.path)
         if not exists:
             raise FileNotFoundError("Dataset with Id {} does not seem to exist at"
                                     " expected location of {}".format(ref.id, location.path))
@@ -473,12 +439,14 @@ class S3Datastore(Datastore):
             formatter = self.formatterFactory.getFormatter(ref)
 
         fullPath = os.path.join(self.root, path)
-        if not os.path.exists(fullPath):
+        relPath = os.path.join(self.rootpath, path)
+        if not s3CheckFileExists(self.client, self.bucket, relPath)[0]:
             raise FileNotFoundError("File at '{}' does not exist; note that paths to ingest are "
                                     "assumed to be relative to self.root unless they are absolute."
                                     .format(fullPath))
 
         if transfer is None:
+            # OK, uber-confused about why and what exactly is happening here
             if os.path.isabs(path):
                 absRoot = os.path.abspath(self.root)
                 if os.path.commonpath([absRoot, path]) != absRoot:
@@ -514,8 +482,9 @@ class S3Datastore(Datastore):
 
         # Create Storage information in the registry
         checksum = self.computeChecksum(fullPath)
-        stat = os.stat(fullPath)
-        size = stat.st_size
+        # the file should exist on the bucket by now
+        exists, size = s3CheckFileExists(self.client, self.bucket, relPath)
+
         self.registry.addDatasetLocation(ref, self.name)
 
         # Associate this dataset with the formatter for later read.
@@ -717,6 +686,16 @@ class S3Datastore(Datastore):
             raise NameError("The specified algorithm '{}' is not supported by hashlib".format(algorithm))
 
         hasher = hashlib.new(algorithm)
+
+        tmpdir = "/home/dinob/uni/lsstspark/simple_repo/s3_repo"
+        scheme, root, relpath = parsePath2Uri(filename)
+        dirpath, name = os.path.split(relpath)
+        potentialloc = os.path.join(tmpdir, name)
+        if os.path.exists(potentialloc):
+            filename = potentialloc
+        else:
+            self.client.download_file(root, relpath, potentialloc)
+            filename = potentialloc
 
         with open(filename, "rb") as f:
             for chunk in iter(lambda: f.read(block_size), b""):

@@ -33,6 +33,32 @@ from urllib.parse import urlparse
 from lsst.utils import doImport
 
 
+def s3CheckFileExists(client, bucket, filepath):
+    """Checks that the file exists and if it does returns its size.
+
+    Parameters
+    ----------
+    client : 'boto3.client'
+        S3 Client object to query.
+    bucket : 'str'
+        Name of the bucket in which to look.
+    filepath : 'str'
+        Path to file.
+    """
+    # this has maxkeys kwarg, limited to 1000
+    response = client.list_objects_v2(
+        Bucket=bucket,
+        Prefix=filepath
+    )
+    # Hopefully multiple identical files will never exist?
+    # if not then this returns list len 1 if found, this is charged for - worth it?
+    matches = [x for x in response.get('Contents', []) if x["Key"] == filepath]
+    if len(matches) == 1:
+        return (True, matches[0]['Size'])
+    else:
+        return (False, 0)
+
+
 # it would be great if this can be better
 def parsePath2Uri(path):
     """If the path is a local filesystem path constructs elements of a URI.
@@ -89,7 +115,7 @@ def bucketExists(uri):
     session = boto3.Session(profile_name='default')
     client = boto3.client('s3')
     scheme, root, relpath = parsePath2Uri(uri)
-    
+
     try:
         client.get_bucket_location(Bucket=root)
         # bucket exists, all is well

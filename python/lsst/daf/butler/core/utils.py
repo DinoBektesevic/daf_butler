@@ -45,6 +45,11 @@ def s3CheckFileExists(client, bucket, filepath):
     filepath : 'str'
         Path to file.
     """
+    # I am downright not sure why checking if file exists is so complicated
+    # https://github.com/boto/botocore/issues/1248
+    # https://github.com/boto/boto3/issues/1128
+    # https://stackoverflow.com/questions/33842944/check-if-a-key-exists-in-a-bucket-in-s3-using-boto3
+
     # this has maxkeys kwarg, limited to 1000
     response = client.list_objects_v2(
         Bucket=bucket,

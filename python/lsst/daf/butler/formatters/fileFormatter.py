@@ -205,7 +205,6 @@ class FileFormatter(Formatter):
             composite.
         """
         data = self._fromBytes(pickledDataset, fileDescriptor.storageClass.pytype)
-
         # if read and write storage classes differ, more work is required
         readStorageClass = fileDescriptor.readStorageClass
         if readStorageClass != fileDescriptor.storageClass:

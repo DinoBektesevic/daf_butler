@@ -225,6 +225,7 @@ class Butler:
             if self.run is None:
                 self.run = self.registry.makeRun(runCollection)
 
+
     def __del__(self):
         # Attempt to close any open resources when this object is
         # garbage collected. Python does not guarantee that this method
@@ -368,6 +369,7 @@ class Butler:
         else:
             # This is an entity without a disassembler.
             self.datastore.put(obj, ref)
+
 
         return ref
 

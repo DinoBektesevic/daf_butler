@@ -23,6 +23,7 @@ __all__ = ("YamlFormatter", )
 
 import builtins
 import yaml
+import pickle
 
 from lsst.daf.butler.formatters.fileFormatter import FileFormatter
 
@@ -34,6 +35,55 @@ class YamlFormatter(FileFormatter):
 
     unsupportedParameters = None
     """This formatter does not support any parameters"""
+
+    def _fromBytes(self, pickledDataset, pytype):
+        """Read the bytes object as a python object.
+
+        Parameters
+        ----------
+        pickledDataset : `str`
+            Bytes object to unserialize.
+        pytype : `class`, optional
+            Not used by this implementation.
+
+        Returns
+        -------
+        data : `object`
+            Either data as Python object read from the pickled string, or None
+            if the string could not be read.
+        """
+        try:
+            data = pickle.loads(pickledDataset)
+        except pickle.PicklingError:
+            data = None
+        try:
+            data = data.exportAsDict()
+        except AttributeError:
+            # how does Yaml read stuff, does it create its object or just a dict
+            # if obj: is there a logic bug in my ingest? Is the logic bug solvable
+            # here by testing for a handfull of return types?
+            pass
+        return data
+
+    def _toBytes(self, inMemoryDataset):
+        """Write the in memory dataset to a bytestring.
+
+        Parameters
+        ----------
+        inMemoryDataset : `object`
+            Object to serialize
+
+        Returns
+        -------
+        data : `str`
+            Bytes object representing the pickled object.
+
+        Raises
+        ------
+        Exception
+            The object could not be pickled.
+        """
+        return pickle.dumps(inMemoryDataset, protocol=-1)
 
     def _readFile(self, path, pytype=None):
         """Read a file from the path in YAML format.

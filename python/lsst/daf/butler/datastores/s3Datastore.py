@@ -29,11 +29,12 @@ import hashlib
 import logging
 from collections import namedtuple
 from urllib.parse import urlparse
+import tempfile
 
 import boto3
 
-from lsst.daf.butler import (Config, Datastore, DatastoreConfig, LocationFactory,
-                             FileDescriptor, FormatterFactory, FileTemplates, StoredFileInfo,
+from lsst.daf.butler import (Config, Datastore, DatastoreConfig, LocationFactory, S3LocationFactory,
+                             Location, FileDescriptor, FormatterFactory, FileTemplates, StoredFileInfo,
                              StorageClassFactory, DatasetTypeNotSupportedError, DatabaseDict,
                              DatastoreValidationError, FileTemplateValidationError)
 from lsst.daf.butler.core.utils import transactional, getInstanceOf, s3CheckFileExists, parsePath2Uri
@@ -43,7 +44,7 @@ log = logging.getLogger(__name__)
 
 
 class S3Datastore(Datastore):
-    """Basic POSIX filesystem backed Datastore.
+    """Basic S3 Object Storage backed Datastore.
 
     Attributes
     ----------
@@ -53,8 +54,11 @@ class S3Datastore(Datastore):
         `Registry` to use when recording the writing of Datasets.
     root : `str`
         Root directory of this `Datastore`.
+    s3locationFactory : `LocationFactory`
+        Factory for creating locations relative to S3 bucket.
     locationFactory : `LocationFactory`
-        Factory for creating locations relative to this root.
+        Factory for creating locations relative to datastore root
+        as if it was file:// .
     formatterFactory : `FormatterFactory`
         Factory for creating instances of formatters.
     storageClassFactory : `StorageClassFactory`
@@ -116,19 +120,15 @@ class S3Datastore(Datastore):
 
         self.root = self.config["root"]
         parsed = urlparse(self.root)
-        self.service = parsed.scheme
-        self.bucket = parsed.netloc
-        self.rootpath = parsed.path.lstrip('/')
+        self.s3locationFactory = S3LocationFactory(parsed.netloc, parsed.path)
 
-        # I assume we need to authorize somewhere clever
+        # I assume we need to authorize somewhere clever-er
         self.session = boto3.Session(profile_name='default')
         self.client = boto3.client('s3')
-
+        self.bucket = self.s3locationFactory._bucket
         try:
             self.client.get_bucket_location(Bucket=self.bucket)
-            # bucket exsists - all is well, technically this would be where
-            # its yaml config can be downloaded(?) but config required
-            # earlier to instantiate a Datastore. Confusing....
+            # bucket exsists - all is well
             pass
         except self.client.exceptions.NoSuchBucket:
             # generalizations hard?
@@ -137,7 +137,6 @@ class S3Datastore(Datastore):
                                  LocationConstraint = {'LocationConstraint':'us-west-2'}
             )
 
-        self.locationFactory = LocationFactory(self.root)
         self.formatterFactory = FormatterFactory()
         self.storageClassFactory = StorageClassFactory()
 
@@ -235,14 +234,9 @@ class S3Datastore(Datastore):
         except KeyError:
             return False
 
-        # I am downright not sure why checking if file exists is so complicated
-        # https://github.com/boto/botocore/issues/1248
-        # https://github.com/boto/boto3/issues/1128
-        # https://stackoverflow.com/questions/33842944/check-if-a-key-exists-in-a-bucket-in-s3-using-boto3
-
         # Use the path to determine the location
-        location = self.locationFactory.fromPath(storedFileInfo.path)
-        return s3CheckFileExists(self.client, self.bucket, location.path)[0]
+        location = self.s3locationFactory.fromPath(storedFileInfo.path)
+        return s3CheckFileExists(self.client, location.bucket, location.path)[0]
 
     def get(self, ref, parameters=None):
         """Load an InMemoryDataset from the store.
@@ -277,15 +271,11 @@ class S3Datastore(Datastore):
         except KeyError:
             raise FileNotFoundError("Could not retrieve Dataset {}".format(ref))
 
-        # Use the path to determine the location,  is manual crankig allowed?
-        # I can't wrap my head around how to figure out URI from DataRef and then
-        # fromPath is useless because urljoin doesn't do s3 URIs but it is a general
-        # factory so other cases still must work so I can't remove it
-        location = self.locationFactory.fromUri('s3://'+storedFileInfo.path)
+        location = self.s3locationFactory.fromPath(storedFileInfo.path)
 
         # Too expensive to recalculate the checksum on fetch
         # but we can check size and existence
-        exists, size = s3CheckFileExists(self.client, self.bucket, location.path)
+        exists, size = s3CheckFileExists(self.client, location.bucket, location.path)
         if not exists:
             raise FileNotFoundError("Dataset with Id {} does not seem to exist at"
                                     " expected location of {}".format(ref.id, location.path))
@@ -331,7 +321,7 @@ class S3Datastore(Datastore):
                 # I think I should rewrite the Locationfactory into something actually usable. I messed it up.
                 # but it's so very practicle being able to use relative paths but still get S3Location...
                 datasetName = location.path.split('/')[-1]
-                tmpLoc = Location(tmpRootDir.name, datasetName)
+                tmpLoc = Location(tmpRootDir, datasetName)
 
                 if os.path.exists(tmpLoc.path):
                     raise FileExistsError(f"Cannot write file for ref {ref} as "
@@ -391,13 +381,19 @@ class S3Datastore(Datastore):
         except KeyError as e:
             raise DatasetTypeNotSupportedError(f"Unable to find template for {ref}") from e
 
-        location = self.locationFactory.fromPath(template.format(ref))
+        location = self.s3locationFactory.fromPath(template.format(ref))
 
         # Get the formatter based on the storage class
         try:
             formatter = self.formatterFactory.getFormatter(ref)
         except KeyError as e:
             raise DatasetTypeNotSupportedError(f"Unable to find formatter for {ref}") from e
+
+        # Not sure if things like these are ok, but they are quite often.
+        location.updateExtension(formatter.extension)
+        if s3CheckFileExists(self.client, location.bucket, location.path)[0]:
+            raise FileExistsError(f"Cannot write file for ref {ref} as "
+                                  f"output file {location.uri} already exists")
 
         # if object can be just directly written as a bytestr then why not
         if hasattr(formatter, '_toBytes'):
@@ -415,11 +411,11 @@ class S3Datastore(Datastore):
                 # I think I should rewrite the Locationfactory into something actually usable. I messed it up.
                 # but it's so very practicle being able to use relative paths but still get S3Location...
                 datasetName = location.path.split('/')[-1]
-                tmpLoc = Location(tmpRootDir.name, datasetName)
+                tmpLoc = Location(tmpRootDir, datasetName)
 
                 if os.path.exists(tmpLoc.path):
                     raise FileExistsError(f"Cannot write file for ref {ref} as "
-                                          f"output file {predictedFullPath} already exists")
+                                          f"output file {tmpLoc.uri} already exists")
 
                 # removing the tmpdir not neccesary? Just a rollback
                 with self.transaction() as transaction:
@@ -474,34 +470,35 @@ class S3Datastore(Datastore):
         if formatter is None:
             formatter = self.formatterFactory.getFormatter(ref)
 
-        schema, root, relpath = parsePath2Uri(path)
-        if (schema != 'file://') and (schema != 's3://'):
-            raise NotImplementedError('Schema type {} not supported.'.format(schema))
+        scheme, root, relpath = parsePath2Uri(path)
+        if (scheme != 'file://') and (scheme != 's3://'):
+            raise NotImplementedError('Scheme type {} not supported.'.format(scheme))
         if transfer is None:
-            if schema == 'file://':
+            if scheme == 'file://':
                 # someone wants to ingest a local file, but not transfer it to object storage
                 abspath = os.path.join(root, relpath)
                 raise RuntimeError(("'{}' is not inside repository root '{}'. Ingesting local data to"
-                                    "S3Datastore without upload to S3 not allowed.").format(abspath, self.root))
-            if schema == 's3://':
+                                    " S3Datastore without upload to S3 not allowed.").format(abspath, self.root))
+            if scheme == 's3://':
+                # if both transfer is None and scheme s3, file was already uploaded in put
                 # when, for whatever reasons the path does not match the bucket URI
                 rootSchema, bucketname, rootDir = parsePath2Uri(self.root)
                 topDir = relpath.split('/')[0] + '/'
                 if (bucketname != root) or (rootDir != topDir):
                     raise RuntimeError("'{}' is not inside repository root '{}'".format(path, self.root))
         elif transfer == 'upload' or transfer == 'copy':
-            if schema == 'file://':
+            if scheme == 'file://':
                 # reuploads not allowed?
                 if s3CheckFileExists(self.client, root, relpath)[0]:
                     raise FileExistsError("File '{}' already exists".format(path))
 
                 template = self.templates.getTemplate(ref)
-                location = self.locationFactory.fromPath(template.format(ref))
+                location = self.s3locationFactory.fromPath(template.format(ref))
                 location.updateExtension(formatter.extension)
 
                 with self.transaction() as transaction:
                     self.client.upload_file(path, self.bucket, location.path)
-            if schema == 's3://':
+            if scheme == 's3://':
                 # this is if ingesting is done from another bucket
                 if s3CheckFileExists(self.client, root, relpath)[0]:
                     fullpath = os.path.join(root, relpath)
@@ -571,14 +568,14 @@ class S3Datastore(Datastore):
                 raise FileNotFoundError("Dataset {} not in this datastore".format(ref))
 
             template = self.templates.getTemplate(ref)
-            location = self.locationFactory.fromPath(template.format(ref) + "#predicted")
+            location = self.s3locationFactory.fromPath(template.format(ref) + "#predicted")
         else:
             # If this is a ref that we have written we can get the path.
             # Get file metadata and internal metadata
             storedFileInfo = self.getStoredFileInfo(ref)
 
             # Use the path to determine the location
-            location = self.locationFactory.fromPath(storedFileInfo.path)
+            location = self.s3locationFactory.fromPath(storedFileInfo.path)
 
         return location.uri
 
@@ -608,10 +605,11 @@ class S3Datastore(Datastore):
             storedFileInfo = self.getStoredFileInfo(ref)
         except KeyError:
             raise FileNotFoundError("Requested dataset ({}) does not exist".format(ref))
-        location = self.locationFactory.fromPath(storedFileInfo.path)
-        if not os.path.exists(location.path):
+        location = self.s3locationFactory.fromPath(storedFileInfo.path)
+        if not s3CheckFileExists(self.client, location.bucket, location.path ): # os.path.exists(location.path):
             raise FileNotFoundError("No such file: {0}".format(location.uri))
-        os.remove(location.path)
+        self.client.delete_object(Bucket=location.bucket, Key=location.path)
+        #os.remove(location.path)
 
         # Remove rows from registries
         self.removeStoredFileInfo(ref)

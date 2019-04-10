@@ -56,7 +56,7 @@ def s3CheckFileExists(client, bucket, filepath):
     if len(matches) == 1:
         return (True, matches[0]['Size'])
     else:
-        return (False, 0)
+        return (False, -1)
 
 
 # it would be great if this can be better
@@ -87,7 +87,7 @@ def parsePath2Uri(path):
             root = '/'
             relpath = parsed.path.lstrip('/')
         else:
-            root = os.path.abspath(path).split(path)
+            root = os.path.abspath(path).split(path)[0]
             relpath = path
     elif parsed.scheme == 's3':
         scheme = 's3://'

@@ -269,7 +269,6 @@ class S3Datastore(Datastore):
         ValueError
             Formatter failed to process the dataset.
         """
-
         log.debug("Retrieve %s from %s with parameters %s", ref, self.name, parameters)
 
         # Get file metadata and internal metadata
@@ -278,13 +277,11 @@ class S3Datastore(Datastore):
         except KeyError:
             raise FileNotFoundError("Could not retrieve Dataset {}".format(ref))
 
-        # Use the path to determine the location
-        # is manual crankig allowed? I can't wrap my head around fromPath
-        # its useless to send it an s3 uri because it can't reason them out,
-        # but it is a general Factory so other cases still must work so I can't remove
-        # the urljoin call
-        location = self.locationFactory.fromPath('s3://' + os.path.join(self.bucket,
-                                                                        storedFileInfo.path))
+        # Use the path to determine the location,  is manual crankig allowed?
+        # I can't wrap my head around how to figure out URI from DataRef and then
+        # fromPath is useless because urljoin doesn't do s3 URIs but it is a general
+        # factory so other cases still must work so I can't remove it
+        location = self.locationFactory.fromUri('s3://'+storedFileInfo.path)
 
         # Too expensive to recalculate the checksum on fetch
         # but we can check size and existence
@@ -307,22 +304,48 @@ class S3Datastore(Datastore):
         # Is this a component request?
         component = ref.datasetType.component()
 
-        # we can download here to tmpfile (permanent in this case) and use expected formatters
-        # or we can download in formatters - I've seen constructors from streams for most of objs
-        # with benefit of no tmpfile handling (eventually). This doubles all formatters, bad?,
-        # but doesn't force me to figure out how to change the Location afterwards.
-#        savepath = "/home/dinob/uni/lsstspark/simple_repo/s3_repo/gen3.sqlite3"
-#        s3client.download_file(root, relpath, savepath)
-#        registryConfig.update({'registry': {'db': db+'///'+savepath}})
-
         formatter = getInstanceOf(storedFileInfo.formatter)
         formatterParams, assemblerParams = formatter.segregateParameters(parameters)
-        try:
-            result = formatter.read(FileDescriptor(location, readStorageClass=readStorageClass,
-                                                   storageClass=writeStorageClass, parameters=parameters),
-                                    component=component)
-        except Exception as e:
-            raise ValueError("Failure from formatter for Dataset {}: {}".format(ref.id, e))
+
+        # if object can be just directly read as a bytestr then why not
+        if hasattr(formatter, '_fromBytes'):
+            with self.transaction() as transaction:
+                # this could be try-excepted for a nicer error output when FileNotFound, is it worth it?
+                try:
+                    response = self.client.get_object(Bucket=self.bucket, Key=location.path)
+                except self.client.exceptions.ClientError as err:
+                    if err['Error']['Code'] == '404':
+                        raise FileNotFoundError('Could not find dataset {}'.format(location.uri)) from err
+
+                pickledDataset = response['Body'].read()
+                fileDescriptor = FileDescriptor(location, readStorageClass=readStorageClass,
+                                                storageClass=writeStorageClass, parameters=parameters)
+                try:
+                    result = formatter.fromBytes(pickledDataset, fileDescriptor, component=component)
+                except Exception as e:
+                    raise ValueError("Failure from formatter for Dataset {}: {}".format(ref.id, e))
+        # but if it can't we need to open a tmpdir, save there, and upload as file
+        else:
+            # we can't change location we need to make up a new one that we clean up afterwards.
+            with tempfile.TemporaryDirectory() as tmpRootDir:
+                # I think I should rewrite the Locationfactory into something actually usable. I messed it up.
+                # but it's so very practicle being able to use relative paths but still get S3Location...
+                datasetName = location.path.split('/')[-1]
+                tmpLoc = Location(tmpRootDir.name, datasetName)
+
+                if os.path.exists(tmpLoc.path):
+                    raise FileExistsError(f"Cannot write file for ref {ref} as "
+                                          f"output file {predictedFullPath} already exists")
+
+                # removing the tmpdir not neccesary? Just a rollback
+                with self.transaction() as transaction:
+                    self.client.download_file(self.bucket, location.path, tmpLoc.path)
+                    fileDescriptor = FileDescriptor(tmpLoc, readStorageClass=readStorageClass,
+                                                    storageClass=writeStorageClass, parameters=parameters)
+                    try:
+                        result = formatter.read(fileDescriptor, component=component)
+                    except Exception as e:
+                        raise ValueError("Failure from formatter for Dataset {}: {}".format(ref.id, e))
 
         # Process any left over parameters
         if parameters:
@@ -376,22 +399,35 @@ class S3Datastore(Datastore):
         except KeyError as e:
             raise DatasetTypeNotSupportedError(f"Unable to find formatter for {ref}") from e
 
-        storageDir = os.path.dirname(location.path)
-        if not os.path.isdir(storageDir):
-            with self._transaction.undoWith("mkdir", os.rmdir, storageDir):
-                safeMakeDir(storageDir)
+        # if object can be just directly written as a bytestr then why not
+        if hasattr(formatter, '_toBytes'):
+            with self.transaction() as transaction:
+                fileDescriptor = FileDescriptor(location, storageClass=storageClass)
+                pickledDataset = formatter.toBytes(inMemoryDataset,  fileDescriptor)
+                self.client.put_object(Bucket=self.bucket, Key=location.path, Body=pickledDataset)
+                # required for ingest...
+                path = location.uri
+            log.debug("Wrote file to %s", location.uri)
+        # but if it can't we need to open a tmpdir, save there, and upload as file
+        else:
+            # we can't change location attrs, so we need to make up a new one that we clean up afterwards.
+            with tempfile.TemporaryDirectory() as tmpRootDir:
+                # I think I should rewrite the Locationfactory into something actually usable. I messed it up.
+                # but it's so very practicle being able to use relative paths but still get S3Location...
+                datasetName = location.path.split('/')[-1]
+                tmpLoc = Location(tmpRootDir.name, datasetName)
 
-        # Write the file
-        predictedFullPath = os.path.join(self.root, formatter.predictPath(location))
+                if os.path.exists(tmpLoc.path):
+                    raise FileExistsError(f"Cannot write file for ref {ref} as "
+                                          f"output file {predictedFullPath} already exists")
 
-        if os.path.exists(predictedFullPath):
-            raise FileExistsError(f"Cannot write file for ref {ref} as "
-                                  f"output file {predictedFullPath} already exists")
+                # removing the tmpdir not neccesary? Just a rollback
+                with self.transaction() as transaction:
+                    path = formatter.write(inMemoryDataset, FileDescriptor(tmpLoc, storageClass=storageClass))
+                    assert tmpLoc.path == os.path.join(tmpRootDir, path)
+                    self.client.upload_file(tmpLoc.path, self.bucket, location.path)
 
-        with self._transaction.undoWith("write", os.remove, predictedFullPath):
-            path = formatter.write(inMemoryDataset, FileDescriptor(location, storageClass=storageClass))
-            assert predictedFullPath == os.path.join(self.root, path)
-            log.debug("Wrote file to %s", path)
+                log.debug("Wrote file to %s via a temporary directory.", location.uri)
 
         self.ingest(path, ref, formatter=formatter)
 
@@ -438,58 +474,57 @@ class S3Datastore(Datastore):
         if formatter is None:
             formatter = self.formatterFactory.getFormatter(ref)
 
-        fullPath = os.path.join(self.root, path)
-        relPath = os.path.join(self.rootpath, path)
-        if not s3CheckFileExists(self.client, self.bucket, relPath)[0]:
-            raise FileNotFoundError("File at '{}' does not exist; note that paths to ingest are "
-                                    "assumed to be relative to self.root unless they are absolute."
-                                    .format(fullPath))
-
+        schema, root, relpath = parsePath2Uri(path)
+        if (schema != 'file://') and (schema != 's3://'):
+            raise NotImplementedError('Schema type {} not supported.'.format(schema))
         if transfer is None:
-            # OK, uber-confused about why and what exactly is happening here
-            if os.path.isabs(path):
-                absRoot = os.path.abspath(self.root)
-                if os.path.commonpath([absRoot, path]) != absRoot:
+            if schema == 'file://':
+                # someone wants to ingest a local file, but not transfer it to object storage
+                abspath = os.path.join(root, relpath)
+                raise RuntimeError(("'{}' is not inside repository root '{}'. Ingesting local data to"
+                                    "S3Datastore without upload to S3 not allowed.").format(abspath, self.root))
+            if schema == 's3://':
+                # when, for whatever reasons the path does not match the bucket URI
+                rootSchema, bucketname, rootDir = parsePath2Uri(self.root)
+                topDir = relpath.split('/')[0] + '/'
+                if (bucketname != root) or (rootDir != topDir):
                     raise RuntimeError("'{}' is not inside repository root '{}'".format(path, self.root))
-                path = os.path.relpath(path, absRoot)
+        elif transfer == 'upload' or transfer == 'copy':
+            if schema == 'file://':
+                # reuploads not allowed?
+                if s3CheckFileExists(self.client, root, relpath)[0]:
+                    raise FileExistsError("File '{}' already exists".format(path))
+
+                template = self.templates.getTemplate(ref)
+                location = self.locationFactory.fromPath(template.format(ref))
+                location.updateExtension(formatter.extension)
+
+                with self.transaction() as transaction:
+                    self.client.upload_file(path, self.bucket, location.path)
+            if schema == 's3://':
+                # this is if ingesting is done from another bucket
+                if s3CheckFileExists(self.client, root, relpath)[0]:
+                    fullpath = os.path.join(root, relpath)
+                    raise FileExistsError("File '{}' already exists".format(schema+fullpath))
+
+                copySrc = {'Bucket': root, 'Key': relpath}
+                self.client.copy(copySrc, self.bucket, relpath)
         else:
-            template = self.templates.getTemplate(ref)
-            location = self.locationFactory.fromPath(template.format(ref))
-            newPath = formatter.predictPath(location)
-            newFullPath = os.path.join(self.root, newPath)
-            if os.path.exists(newFullPath):
-                raise FileExistsError("File '{}' already exists".format(newFullPath))
-            storageDir = os.path.dirname(newFullPath)
-            if not os.path.isdir(storageDir):
-                with self._transaction.undoWith("mkdir", os.rmdir, storageDir):
-                    safeMakeDir(storageDir)
-            if transfer == "move":
-                with self._transaction.undoWith("move", shutil.move, newFullPath, fullPath):
-                    shutil.move(fullPath, newFullPath)
-            elif transfer == "copy":
-                with self._transaction.undoWith("copy", os.remove, newFullPath):
-                    shutil.copy(fullPath, newFullPath)
-            elif transfer == "hardlink":
-                with self._transaction.undoWith("hardlink", os.unlink, newFullPath):
-                    os.link(fullPath, newFullPath)
-            elif transfer == "symlink":
-                with self._transaction.undoWith("symlink", os.unlink, newFullPath):
-                    os.symlink(fullPath, newFullPath)
-            else:
-                raise NotImplementedError("Transfer type '{}' not supported.".format(transfer))
-            path = newPath
-            fullPath = newFullPath
+            raise NotImplementedError("Transfer type '{}' not supported.".format(transfer))
+
+        path = os.path.join(self.bucket, relpath)
+        fullPath = 's3//'+path
 
         # Create Storage information in the registry
-        checksum = self.computeChecksum(fullPath)
+        #checksum = self.computeChecksum(fullPath)
         # the file should exist on the bucket by now
-        exists, size = s3CheckFileExists(self.client, self.bucket, relPath)
+        exists, size = s3CheckFileExists(self.client, self.bucket, relpath)
 
         self.registry.addDatasetLocation(ref, self.name)
 
         # Associate this dataset with the formatter for later read.
         fileInfo = StoredFileInfo(formatter, path, ref.datasetType.storageClass,
-                                  size=size, checksum=checksum)
+                                  size=size)
         # TODO: this is only transactional if the DatabaseDict uses
         #       self.registry internally.  Probably need to add
         #       transactions to DatabaseDict to do better than that.
@@ -694,7 +729,8 @@ class S3Datastore(Datastore):
         if os.path.exists(potentialloc):
             filename = potentialloc
         else:
-            self.client.download_file(root, relpath, potentialloc)
+            client = boto3.client('s3')
+            client.download_file(root, relpath, potentialloc)
             filename = potentialloc
 
         with open(filename, "rb") as f:

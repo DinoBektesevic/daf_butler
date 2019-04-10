@@ -178,6 +178,75 @@ class FileFormatter(Formatter):
 
         return fileDescriptor.location.pathInStore
 
+    def fromBytes(self, pickledDataset, fileDescriptor, component=None):
+        """Read data from a bytestring.
+
+        Parameters
+        ----------
+        pickledDataset : `str`
+            Bytes object to unserialize
+        component : `str`, optional
+            Component to read from the file. Only used if the `StorageClass`
+            for reading differed from the `StorageClass` used to write the
+            file.
+        pytype : 'class'
+            Class to use to read the dataset into a python object.
+
+        Returns
+        -------
+        inMemoryDataset : `object`
+            The requested data as a Python object. The type of object
+            is controlled by the specific formatter.
+
+        Raises
+        ------
+        ValueError
+            Component requested but this file does not seem to be a concrete
+            composite.
+        """
+        data = self._fromBytes(pickledDataset, fileDescriptor.storageClass.pytype)
+
+        # if read and write storage classes differ, more work is required
+        readStorageClass = fileDescriptor.readStorageClass
+        if readStorageClass != fileDescriptor.storageClass:
+            if component is None:
+                raise ValueError("Storage class inconsistency ({} vs {}) but no"
+                                 " component requested".format(readStorageClass.name,
+                                                               fileDescriptor.storageClass.name))
+
+            # Concrete composite written as a single file (we hope)
+            try:
+                data = fileDescriptor.storageClass.assembler().getComponent(data, component)
+            except AttributeError:
+                # Defer the complaint
+                data = None
+
+        # Coerce to the requested type (not necessarily the type that was
+        # written)
+        data = self._coerceType(data, fileDescriptor.readStorageClass,
+                                pytype=fileDescriptor.readStorageClass.pytype)
+
+        if data is None:
+            raise ValueError("Unable to read data with URI {}".format(fileDescriptor.location.uri))
+
+        return data
+
+    def toBytes(self, inMemoryDataset, fileDescriptor):
+        """Write a Python object to a bytestring.
+
+        Parameters
+        ----------
+        inMemoryDataset : `object`
+            The Python object to store.
+
+        Returns
+        -------
+        pickedDataset : `str`
+            The bytestring representing the pickled dataset.
+        """
+        fileDescriptor.location.updateExtension(self.extension)
+        return self._toBytes(inMemoryDataset)
+
 
     def predictPath(self, location):
         """Return the path that would be returned by write, without actually

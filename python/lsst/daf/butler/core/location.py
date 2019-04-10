@@ -24,7 +24,7 @@ __all__ = ("S3Location", "Location", "LocationFactory")
 import os
 import os.path
 import urllib
-
+from .utils import parsePath2Uri
 
 class Location:
     """Identifies a location in the `Datastore`.
@@ -85,9 +85,10 @@ class S3Location:
     TODO: This will have broken functionality for extensions etc.
     """
 
-    __slots__ = ("_datastoreRoot", "_uri", "_bucket")
+    __slots__ = ("_datastoreRoot", "_uri", "_bucket", "_schema")
 
     def __init__(self, datastoreRoot, uri, bucket, **kwargs):
+        self._schema = 's3://'
         self._datastoreRoot = datastoreRoot.lstrip('/')
         self._uri = urllib.parse.urlparse(uri)
         self._bucket = bucket
@@ -99,7 +100,8 @@ class S3Location:
     def uri(self):
         """URI corresponding to location.
         """
-        return self._uri.geturl()
+        # uri.geturl will return only s3:/ not s3://
+        return self._schema+os.path.join(self._bucket, self.path)
 
     @property
     def path(self):
@@ -107,13 +109,15 @@ class S3Location:
 
         This path includes the root of the `Datastore`.
         """
-        return os.path.join(self._datastoreRoot, self._uri.path.lstrip("/"))
+        return self._uri.path.lstrip("/")
 
     @property
     def pathInStore(self):
         """Path corresponding to location relative to `Datastore` root.
         """
-        return self._uri.path.lstrip("/")
+        # kick out datastoreRoot from path
+        dirs = self._uri.path.split('/')
+        return os.path.join(*dirs[2:])
 
     def updateExtension(self, ext):
         """Update the file extension associated with this `Location`.
@@ -173,7 +177,26 @@ class LocationFactory:
         """
         if uri is None or not isinstance(uri, str):
             raise ValueError("URI must be a string and not {}".format(uri))
-        return self._location(self._datastoreRoot, uri, bucket=self._bucket)
+        scheme, root, relpath = parsePath2Uri(uri)
+        if scheme == 's3://':
+            bucket = root if root == self._bucket else self._bucket
+
+            # get rid of any potential duplicate datastoreRoots
+            dirs = relpath.split('/')
+            rootDir = self._datastoreRoot.strip('/')
+            nEqual = 0
+            for d in dirs:
+                if d==rootDir:
+                    nEqual += 1
+                else:
+                    break
+
+            rootDir = self._datastoreRoot.lstrip('/')
+            relpath = os.path.join(*dirs[nEqual:])
+            uri = scheme + os.path.join(bucket, rootDir, relpath)
+        if scheme == 'file://':
+            pass #rootDir = self._datastoreRoot
+        return self._location(rootDir, uri, bucket=bucket)
 
     def fromPath(self, path):
         """Factory function to create a `Location` from a POSIX path.
@@ -186,4 +209,9 @@ class LocationFactory:
             The equivalent `Location`.
         """
         uri = urllib.parse.urljoin(self._service, path)
+        if uri == path:
+            if uri.split('/')[0] == self._bucket:
+                uri = self._service + uri
+            else:
+                uri = self._service + os.path.join(self._bucket, path)
         return self.fromUri(uri)

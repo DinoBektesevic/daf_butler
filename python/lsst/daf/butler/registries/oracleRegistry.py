@@ -25,7 +25,6 @@ import re
 
 from sqlalchemy import event
 from sqlalchemy import create_engine
-from sqlalchemy.pool import NullPool
 
 
 from lsst.daf.butler.core.config import Config
@@ -65,10 +64,12 @@ class OracleRegistry(SqlRegistry):
         Config.overrideParameters(RegistryConfig, config, full,
                                   toCopy=("cls", "deferDatasetIdQueries"))
 
-    def __init__(self, registryConfig, schemaConfig, dimensionConfig, create=False):
+    def __init__(self, registryConfig, schemaConfig, dimensionConfig, create=False,
+                 butlerRoot=None):
         registryConfig = SqlRegistryConfig(registryConfig)
         self.schemaConfig = schemaConfig
-        super().__init__(registryConfig, schemaConfig, dimensionConfig, create)
+        super().__init__(registryConfig, schemaConfig, dimensionConfig, create,
+                         butlerRoot=butlerRoot)
 
     def _createEngine(self):
         tables = self.schemaConfig['tables'].keys()
@@ -106,6 +107,6 @@ class OracleRegistry(SqlRegistry):
                     # single quote, optional close double quote
                     statement = re.sub(f"\"?'?{name}\\b'?\"?", lambda x: _ignoreQuote(name, x), statement)
             return statement, parameters
-        engine = create_engine(self.config["db"], poolclass=NullPool)
+        engine = create_engine(self.config["db"], pool_size=1)
         event.listen(engine, "before_cursor_execute", _oracleExecute, retval=True)
         return engine

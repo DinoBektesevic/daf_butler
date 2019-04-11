@@ -23,11 +23,12 @@ __all__ = ("SqlRegistryConfig", "SqlRegistry")
 
 import itertools
 import contextlib
+import warnings
 
 from sqlalchemy import create_engine, text, func
 from sqlalchemy.pool import NullPool
 from sqlalchemy.sql import select, and_, bindparam, union
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SADeprecationWarning
 
 from ..core.utils import transactional
 
@@ -70,7 +71,7 @@ class SqlRegistry(Registry):
     absolute path. Can be None if no defaults specified.
     """
 
-    def __init__(self, registryConfig, schemaConfig, dimensionConfig, create=False):
+    def __init__(self, registryConfig, schemaConfig, dimensionConfig, create=False, butlerRoot=None):
         registryConfig = SqlRegistryConfig(registryConfig)
         super().__init__(registryConfig, dimensionConfig=dimensionConfig)
         self.storageClasses = StorageClassFactory()
@@ -79,11 +80,15 @@ class SqlRegistry(Registry):
         self._engine = self._createEngine()
         self._connection = self._createConnection(self._engine)
         if create:
-            self._createTables(self._schema, self._connection)
-
-    def close(self):
-        # Docstring inherited from Registry.close
-        self._connection.close()
+            # In our tables we have columns that make use of sqlalchemy
+            # Sequence objects. There is currently a bug in sqlalchmey
+            # that causes a deprecation warning to be thrown on a
+            # property of the Sequence object when the repr for the
+            # sequence is created. Here a filter is used to catch these
+            # deprecation warnings when tables are created.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=SADeprecationWarning)
+                self._createTables(self._schema, self._connection)
 
     def __str__(self):
         return self.config["db"]

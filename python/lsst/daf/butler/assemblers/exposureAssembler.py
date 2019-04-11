@@ -22,7 +22,7 @@
 """Support for assembling and disassembling afw Exposures."""
 
 # Need to enable PSFs to be instantiated
-import lsst.afw.detection  # noqa F401
+import lsst.afw.detection  # noqa: F401
 from lsst.afw.image import makeExposure, makeMaskedImage
 
 from lsst.daf.butler import CompositeAssembler
@@ -31,7 +31,7 @@ from lsst.daf.butler import CompositeAssembler
 class ExposureAssembler(CompositeAssembler):
 
     EXPOSURE_COMPONENTS = set(("image", "variance", "mask", "wcs", "psf"))
-    EXPOSURE_INFO_COMPONENTS = set(("apCorrMap", "coaddInputs", "calib", "metadata",
+    EXPOSURE_INFO_COMPONENTS = set(("apCorrMap", "coaddInputs", "photoCalib", "metadata",
                                     "filter", "transmissionCurve", "visitInfo"))
 
     def _groupRequestedComponents(self):
@@ -211,7 +211,7 @@ class ExposureAssembler(CompositeAssembler):
 
         # Set other components
         exposure.setPsf(components.pop("psf", None))
-        exposure.setCalib(components.pop("calib", None))
+        exposure.setPhotoCalib(components.pop("photoCalib", None))
 
         info = exposure.getInfo()
         if "visitInfo" in components:

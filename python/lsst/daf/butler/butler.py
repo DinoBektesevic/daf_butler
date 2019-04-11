@@ -44,6 +44,8 @@ from .core.butlerConfig import ButlerConfig
 from .core.composites import CompositesMap
 from .core.dimensions import DataId
 from .core.exceptions import ValidationError
+from .core.repoRelocation import BUTLER_ROOT_TAG
+from .core.safeFileIo import safeMakeDir
 
 log = logging.getLogger(__name__)
 
@@ -149,7 +151,7 @@ class Butler:
         if scheme == 'file://':
             root = os.path.abspath(root)
             if not os.path.isdir(root):
-                os.makedirs(root)
+                safeMakeDir(root)
         elif scheme == 's3://':
             s3 = boto3.resource('s3')
             # implies bucket exists, if not another level of checks
@@ -158,12 +160,16 @@ class Butler:
 
         config = Config(config)
 
+        # If we are creating a new repo from scratch with relative roots,
+        # do not propagate an explicit root from the config file
+        if "root" in config:
+            del config["root"]
+
         full = ButlerConfig(config)  # this applies defaults
         datastoreClass = doImport(full["datastore", "cls"])
-        datastoreClass.setConfigRoot(root, config, full)
-
+        datastoreClass.setConfigRoot(BUTLER_ROOT_TAG, config, full)
         registryClass = doImport(full["registry", "cls"])
-        registryClass.setConfigRoot(root, config, full)
+        registryClass.setConfigRoot(BUTLER_ROOT_TAG, config, full)
         if standalone:
             config.merge(full)
 
@@ -181,7 +187,7 @@ class Butler:
 
 
         # Create Registry and populate tables
-        registryClass.fromConfig(config, create=createRegistry)
+        registryClass.fromConfig(config, create=createRegistry, butlerRoot=root)
         return config
 
 
@@ -189,8 +195,14 @@ class Butler:
         # save arguments for pickling
         self._args = (config, collection, run)
         self.config = ButlerConfig(config)
-        self.registry = Registry.fromConfig(self.config)
-        self.datastore = Datastore.fromConfig(self.config, self.registry)
+
+        if "root" in self.config:
+            butlerRoot = self.config["root"]
+        else:
+            butlerRoot = self.config.configDir
+
+        self.registry = Registry.fromConfig(self.config, butlerRoot=butlerRoot)
+        self.datastore = Datastore.fromConfig(self.config, self.registry, butlerRoot=butlerRoot)
         self.storageClasses = StorageClassFactory()
         self.storageClasses.addFromConfig(self.config)
         self.composites = CompositesMap(self.config)
@@ -225,6 +237,7 @@ class Butler:
             if self.run is None:
                 self.run = self.registry.makeRun(runCollection)
 
+<<<<<<< HEAD
 
     def __del__(self):
         # Attempt to close any open resources when this object is
@@ -243,6 +256,8 @@ class Butler:
         """
         self.registry.close()
 
+=======
+>>>>>>> d4f779f11a6ac009552b46939f8835a48e307fec
     def __reduce__(self):
         """Support pickling.
         """

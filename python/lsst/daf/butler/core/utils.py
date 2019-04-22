@@ -87,7 +87,6 @@ def parsePath2Uri(path):
     # if the parsed path is the supplied one - filesystem
     if parsed.path == path:
         scheme = 'file://'
-        # bit silly if its already an abspath
         if os.path.isabs(path):
             root = '/'
             relpath = parsed.path.lstrip('/')
@@ -96,7 +95,7 @@ def parsePath2Uri(path):
             relpath = path
     elif parsed.scheme == 's3':
         scheme = 's3://'
-        # this is the bucketname
+        # this ends up being the bucketname
         root = parsed.netloc
         relpath = parsed.path.lstrip('/')
     else:

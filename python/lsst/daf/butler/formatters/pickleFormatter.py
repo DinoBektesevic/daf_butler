@@ -79,12 +79,12 @@ class PickleFormatter(FileFormatter):
         with open(fileDescriptor.location.path, "wb") as fd:
             pickle.dump(inMemoryDataset, fd, protocol=-1)
 
-    def _fromBytes(self, pickledDataset, pytype=None):
+    def _fromBytes(self, inMemoryDataset, pytype=None):
         """Read the bytes object as a python object.
 
         Parameters
         ----------
-        pickledDataset : `str`
+        pickledDataset : `bytes`
             Bytes object to unserialize.
         pytype : `class`, optional
             Not used by this implementation.
@@ -96,7 +96,7 @@ class PickleFormatter(FileFormatter):
             if the string could not be read.
         """
         try:
-            data = pickle.loads(pickledDataset)
+            data = pickle.loads(inMemoryDataset)
         except pickle.PicklingError:
             data = None
 
@@ -112,7 +112,7 @@ class PickleFormatter(FileFormatter):
 
         Returns
         -------
-        data : `str`
+        data : `bytes`
             Bytes object representing the pickled object.
 
         Raises

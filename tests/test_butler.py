@@ -28,6 +28,11 @@ import tempfile
 import shutil
 import pickle
 
+try:
+    import boto3
+except ImportError:
+    boto3 = None
+
 from lsst.daf.butler.core.safeFileIo import safeMakeDir
 from lsst.daf.butler import Butler, Config, ButlerConfig
 from lsst.daf.butler import StorageClassFactory
@@ -543,6 +548,189 @@ class ButlerConfigNoRunTestCase(unittest.TestCase):
         if self.root is not None and os.path.exists(self.root):
             shutil.rmtree(self.root, ignore_errors=True)
 
+
+@unittest.skipIf(not boto3, "Warning: boto3 AWS SDK not installed!")
+@mock_s3
+class S3RdsButlerTestCase(S3DatastoreButlerTestCase):
+    """An Amazon cloud oriented Butler. DataStore is the S3 Storage and the Registry
+    is an RDS PostgreSql service.
+    """
+    configFile = os.path.join(TESTDIR, "config/basic/butler-s3rds.yaml")
+    fullConfigKey = None # ".datastore.formatters"
+    validationCanFail = True
+
+    def genRoot(self):
+        """Returns a random string of len 20 to serve as a root
+        name for the temporary bucket repo.
+        """
+        rndstr = ''.join(
+            random.choice(string.ascii_lowercase) for _ in range(20)
+        )
+        return rndstr
+
+    def setUp(self):
+        config =  Config(configFile)
+        schema, bucket, root = parsePathToUriElements(config['.datastore.datastore.root'])
+        self.bucketName = bucket
+
+        if self.useTempRoot:
+            self.root = self.genRoot()
+        else:
+            self.root = root
+        rooturi = f's3://{self.bucketName}/{self.root}'
+        config.update({'datastore': {'datastore': {'root': rooturi}}})
+
+        tmpconstr = config['.registry.registry.db']
+        defaultName = tmpconstr.split('/')[-1]
+        constr = tmpconstr[:-len(defaultName)]+'{dbname}'
+        self.connectionStr = constr
+
+        # create a new test bucket so that moto knows it exists
+        s3 = boto3.resource('s3')
+        s3.create_bucket(Bucket=self.bucketName)
+
+        # create a new repo root - analog of tempdir
+        if self.useTempRoot:
+            self.root = self.genRoot()
+        else:
+            self.root = self.permRoot
+        # datastoreStr and Name need to be created here, otherwise how can we tell the
+        # name of the randomly created root, I'm not sure how to work this out with the magical
+        # BUTLER_ROOT_TAG
+        rooturi = f's3://{self.bucketName}/{self.root}'
+        self.registryStr = self.connectionStr.format(dbname=self.root)
+        self.datastoreStr = f"datastore={self.root}"
+        self.datastoreName = [f"S3Datastore@{rooturi}"]
+
+        # [SANITY WARNING] - Multiple DBs as individual repositories
+        # Sqlalchemy won't be able to create a new db by just connecting to a new name.
+        # In PostgreSql CREATE DATABSE statement can not be issued within a transaction.
+        # So pure execute won't work since it creates a Connection implicitly. That Connection
+        # needs to be closed before CREATE statement can be issued. This means users need to have
+        # sufficient permissions to create DBs if they want to run this test.
+        from sqlalchemy import create_engine
+        import urllib.parse as urlparse
+        import configparser
+
+        # First, replace the default connection string with a db that we know will always exist.
+        # The name will always be last, but its easier to just replace it than to deconstruct and
+        # then reconstruct the whole string
+        defaultName = self.connectionStr.split('/')[-1]
+        constr = self.connectionStr.replace(defaultName, 'postgres')
+
+        # Second, get the local connection credentials from ~/.rds
+        parsed = urlparse.urlparse(constr)
+        localconf = configparser.ConfigParser()
+        localconf.read(os.path.expanduser('~/.rds/credentials'))
+
+        username = localconf[parsed.username]['username']
+        password = localconf[parsed.username]['password']
+        constr = constr.replace(parsed.username, f'{username}:{password}')
+
+        # Third, connect as that user, commit to drop out of transaction scope and create new DB
+        engine = create_engine(constr)
+        connection = engine.connect()
+        connection.execute('commit')
+        connection.execute(f'CREATE DATABASE {self.root}')
+        connection.close()
+
+        # Finally, now that we know that DB exists, replace the connection string from yaml
+        # config file for a one, that points to newly created temporary DB, and create new repo
+        config = Config(self.configFile)
+        config['.registry.registry.db'] = self.registryStr
+        Butler.makeRepo(rooturi, config=config)
+        self.tmpConfigFile = rooturi+"/butler.yaml"
+
+    def tearDown(self):
+        # clean up the test bucket
+        s3 = boto3.resource('s3')
+        try:
+            s3.Object(self.bucketName, self.root).load()
+            bucket = s3.Bucket(self.bucketName)
+            bucket.objects.all().delete()
+        except botocore.exceptions.ClientError as e:
+            if e.response['Error']['Code'] == '404':
+                # the key was not reachable, pass
+                pass
+            else:
+                raise
+
+        bucket = s3.Bucket(self.bucketName)
+        bucket.delete()
+
+        # [SANITY WARNING #2] - Multiple DBs as repositories strike back
+        # We have to undo everything done in setup. The quickest way is to just drop the
+        # temporary database. PostgreSql won't allow dropping the DB as long as there are
+        # users connected to it. RDS service seems to do a lot in the background with these
+        # DBs since seemingly there is always a process attached. So we need to ban all future
+        # connections to the DB, kill all current connections to it, and then attempt to drop
+        # the DB.
+        from sqlalchemy.exc import OperationalError
+        from sqlalchemy import create_engine
+        import urllib.parse as urlparse
+        import configparser
+
+        # First, replace the default connection string with a db that we know will always exist.
+        defaultName = self.connectionStr.split('/')[-1]
+        constr = self.connectionStr.replace(defaultName, 'postgres')
+
+        # Second, get the local connection credentials from ~/.rds
+        parsed = urlparse.urlparse(constr)
+        localconf = configparser.ConfigParser()
+        localconf.read(os.path.expanduser('~/.rds/credentials'))
+
+        username = localconf[parsed.username]['username']
+        password = localconf[parsed.username]['password']
+        constr = constr.replace(parsed.username, f'{username}:{password}')
+
+        # Third, connect as that user, commit to drop out of transaction scope and create new DB
+        engine = create_engine(constr)
+        connection = engine.connect()
+        connection.execute("commit")
+
+        # Fourth, ban all future connections. Make sure to end transaction scope.
+        connection.execute(f'REVOKE CONNECT ON DATABASE "{self.root}" FROM public;')
+        connection.execute('commit')
+
+        # Fifth, kill all currently connected processes, except ours.
+        # IT IS INCREDIBLY IMPORTANT that the db name is single-quoted!!!
+        connection.execute((f'SELECT pid, pg_terminate_backend(pid) '
+                            'FROM pg_stat_activity WHERE '
+                            f'datname = \'{self.root}\' and pid <> pg_backend_pid();'))
+        connection.execute('commit')
+
+        # Sixth, attempt to drop the table. It does not seem like processes detach *immediatelly*
+        # always, so give them some time
+        import time
+        dropped = False
+        for i in range(3):
+            try:
+                connection.execute(f'DROP DATABASE {self.root}')
+                break
+            except OperationalError as e:
+                time.sleep(1)
+                # if database isn't dropped on 3 attempts add details for debugging and reraise it
+                if i>=2:
+                    columns = ('datid', 'datname', 'pid', 'usesysid', 'usename',
+                               'application_name', 'client_addr', 'client_hostname',
+                               'client_port', 'wait_event_type', 'wait_event', 'state',
+                               'query')
+                    places = ['{'+str(i)+':15}' for i in range(0, len(columns))]
+                    frmtstr = "".join(places)+"\n"
+                    header = frmtstr.format(*columns)
+                    queryCols = ", ".join(columns)
+                    res = connection.execute((f'SELECT {queryCols} FROM pg_stat_activity WHERE '
+                                              f'datname = \'{self.root}\' and pid <> pg_backend_pid();'))
+
+                    details = header
+                    for row in res:
+                        row = [str(val) for val in row.values()] if None in row.values() else row.values()
+                        details += frmtstr.format(*row)
+
+                    e.add_detail(details)
+                    raise e
+            connection.execute('commit')
+        connection.close()
 
 if __name__ == "__main__":
     unittest.main()

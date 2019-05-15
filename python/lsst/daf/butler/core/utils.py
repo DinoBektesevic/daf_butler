@@ -21,14 +21,10 @@
 
 __all__ = ("iterable", "allSlots", "slotValuesAreEqual", "slotValuesToHash",
            "getFullTypeName", "getInstanceOf", "Singleton", "transactional",
-           "getObjectSize", "stripIfNotNone", "PrivateConstructorMeta",
-           "checkFileExists", "s3CheckFileExists", "parsePathToUriElements", "bucketExists")
+           "getObjectSize", "stripIfNotNone", "PrivateConstructorMeta")
 
-import os
 import sys
 import functools
-import urllib
-from urllib.parse import urlparse
 
 from lsst.utils import doImport
 

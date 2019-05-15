@@ -55,7 +55,7 @@ class PickleFormatter(FileFormatter):
         """
         try:
             with open(path, "rb") as fd:
-                data = pickle.load(fd)
+                data = self._fromBytes(fd.read())
         except FileNotFoundError:
             data = None
 
@@ -77,7 +77,7 @@ class PickleFormatter(FileFormatter):
             The file could not be written.
         """
         with open(fileDescriptor.location.path, "wb") as fd:
-            pickle.dump(inMemoryDataset, fd, protocol=-1)
+            fd.write(self._toBytes(inMemoryDataset))
 
     def _fromBytes(self, inMemoryDataset, pytype=None):
         """Read the bytes object as a python object.

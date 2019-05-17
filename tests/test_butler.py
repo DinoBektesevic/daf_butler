@@ -27,11 +27,8 @@ import unittest
 import tempfile
 import shutil
 import pickle
-
-try:
-    import boto3
-except ImportError:
-    boto3 = None
+import random
+import string
 
 from lsst.daf.butler.core.safeFileIo import safeMakeDir
 from lsst.daf.butler import Butler, Config, ButlerConfig
@@ -549,18 +546,30 @@ class ButlerConfigNoRunTestCase(unittest.TestCase):
             shutil.rmtree(self.root, ignore_errors=True)
 
 
-@unittest.skipIf(not boto3, "Warning: boto3 AWS SDK not installed!")
-@mock_s3
-class S3RdsButlerTestCase(S3DatastoreButlerTestCase):
-    """An Amazon cloud oriented Butler. DataStore is the S3 Storage and the Registry
-    is an RDS PostgreSql service.
-    """
-    configFile = os.path.join(TESTDIR, "config/basic/butler-s3rds.yaml")
-    fullConfigKey = None # ".datastore.formatters"
+class RDSRegistryButlerTestCase(ButlerTests, unittest.TestCase):
+    """PosixDatastore using an RDS PostgreSQL Registry specialization of a butler"""
+    configFile = os.path.join(TESTDIR, "config/basic/butler-rds.yaml")
+    fullConfigKey = ".datastore.formatters"
     validationCanFail = True
 
-    def genRoot(self):
-        """Returns a random string of len 20 to serve as a root
+    # there are too many important parameters in the db string that need to
+    # carry over to here, so instead of making people copy-paste it on every change
+    # read it from config and re-format it to something useful. Caveat: the RDS name can,
+    # but does not have to be, the same as the dbname, we want to avoid replacing anything
+    # except the dbname that's why we manually add the name at the end instead of replace().
+    config =  Config(configFile)
+    tmpconstr = config['.registry.registry.db']
+    defaultName = tmpconstr.split('/')[-1]
+    constr = tmpconstr[:-len(defaultName)] + '{dbname}'
+    connectionStr = constr
+
+    # skip the stringification tests
+    datastoreStr = None
+    datastoreName = None
+    registryStr = None
+
+    def genRandomDBName(self):
+        """Returns a random string of len 20 to serve as a DB
         name for the temporary bucket repo.
         """
         rndstr = ''.join(
@@ -569,40 +578,14 @@ class S3RdsButlerTestCase(S3DatastoreButlerTestCase):
         return rndstr
 
     def setUp(self):
-        config =  Config(configFile)
-        schema, bucket, root = parsePathToUriElements(config['.datastore.datastore.root'])
-        self.bucketName = bucket
-
         if self.useTempRoot:
-            self.root = self.genRoot()
+            self.root = tempfile.mkdtemp(dir=TESTDIR)
+            self.tmpConfigFile = os.path.join(self.root, "butler.yaml")
         else:
-            self.root = root
-        rooturi = f's3://{self.bucketName}/{self.root}'
-        config.update({'datastore': {'datastore': {'root': rooturi}}})
+            self.root = None
+            self.tmpConfigFile = self.configFile
 
-        tmpconstr = config['.registry.registry.db']
-        defaultName = tmpconstr.split('/')[-1]
-        constr = tmpconstr[:-len(defaultName)]+'{dbname}'
-        self.connectionStr = constr
-
-        # create a new test bucket so that moto knows it exists
-        s3 = boto3.resource('s3')
-        s3.create_bucket(Bucket=self.bucketName)
-
-        # create a new repo root - analog of tempdir
-        if self.useTempRoot:
-            self.root = self.genRoot()
-        else:
-            self.root = self.permRoot
-        # datastoreStr and Name need to be created here, otherwise how can we tell the
-        # name of the randomly created root, I'm not sure how to work this out with the magical
-        # BUTLER_ROOT_TAG
-        rooturi = f's3://{self.bucketName}/{self.root}'
-        self.registryStr = self.connectionStr.format(dbname=self.root)
-        self.datastoreStr = f"datastore={self.root}"
-        self.datastoreName = [f"S3Datastore@{rooturi}"]
-
-        # [SANITY WARNING] - Multiple DBs as individual repositories
+        # [SANITY WARNING] - Multiple DBs as individual registries
         # Sqlalchemy won't be able to create a new db by just connecting to a new name.
         # In PostgreSql CREATE DATABSE statement can not be issued within a transaction.
         # So pure execute won't work since it creates a Connection implicitly. That Connection
@@ -616,7 +599,8 @@ class S3RdsButlerTestCase(S3DatastoreButlerTestCase):
         # The name will always be last, but its easier to just replace it than to deconstruct and
         # then reconstruct the whole string
         defaultName = self.connectionStr.split('/')[-1]
-        constr = self.connectionStr.replace(defaultName, 'postgres')
+        #constr = self.connectionStr.replace(defaultName, 'postgres')
+        constr = self.connectionStr
 
         # Second, get the local connection credentials from ~/.rds
         parsed = urlparse.urlparse(constr)
@@ -628,35 +612,23 @@ class S3RdsButlerTestCase(S3DatastoreButlerTestCase):
         constr = constr.replace(parsed.username, f'{username}:{password}')
 
         # Third, connect as that user, commit to drop out of transaction scope and create new DB
-        engine = create_engine(constr)
+        engine = create_engine(constr.replace(defaultName, 'postgres'))
         connection = engine.connect()
         connection.execute('commit')
-        connection.execute(f'CREATE DATABASE {self.root}')
+        self.curDBname = self.genRandomDBName()
+        connection.execute(f'CREATE DATABASE {self.curDBname}')
         connection.close()
 
         # Finally, now that we know that DB exists, replace the connection string from yaml
         # config file for a one, that points to newly created temporary DB, and create new repo
         config = Config(self.configFile)
-        config['.registry.registry.db'] = self.registryStr
-        Butler.makeRepo(rooturi, config=config)
-        self.tmpConfigFile = rooturi+"/butler.yaml"
+        config['.registry.registry.db'] = constr.replace(defaultName, self.curDBname)
+        Butler.makeRepo(self.root, config=config)
+        self.tmpConfigFile = os.path.join(self.root, "butler.yaml")
 
     def tearDown(self):
-        # clean up the test bucket
-        s3 = boto3.resource('s3')
-        try:
-            s3.Object(self.bucketName, self.root).load()
-            bucket = s3.Bucket(self.bucketName)
-            bucket.objects.all().delete()
-        except botocore.exceptions.ClientError as e:
-            if e.response['Error']['Code'] == '404':
-                # the key was not reachable, pass
-                pass
-            else:
-                raise
-
-        bucket = s3.Bucket(self.bucketName)
-        bucket.delete()
+        if self.root is not None and os.path.exists(self.root):
+            shutil.rmtree(self.root, ignore_errors=True)
 
         # [SANITY WARNING #2] - Multiple DBs as repositories strike back
         # We have to undo everything done in setup. The quickest way is to just drop the
@@ -689,14 +661,14 @@ class S3RdsButlerTestCase(S3DatastoreButlerTestCase):
         connection.execute("commit")
 
         # Fourth, ban all future connections. Make sure to end transaction scope.
-        connection.execute(f'REVOKE CONNECT ON DATABASE "{self.root}" FROM public;')
+        connection.execute(f'REVOKE CONNECT ON DATABASE "{self.curDBname}" FROM public;')
         connection.execute('commit')
 
         # Fifth, kill all currently connected processes, except ours.
-        # IT IS INCREDIBLY IMPORTANT that the db name is single-quoted!!!
+        # IT IS INCREDIBLY IMPORTANT that the db name is single-quoted.
         connection.execute((f'SELECT pid, pg_terminate_backend(pid) '
                             'FROM pg_stat_activity WHERE '
-                            f'datname = \'{self.root}\' and pid <> pg_backend_pid();'))
+                            f'datname = \'{self.curDBname}\' and pid <> pg_backend_pid();'))
         connection.execute('commit')
 
         # Sixth, attempt to drop the table. It does not seem like processes detach *immediatelly*
@@ -705,7 +677,7 @@ class S3RdsButlerTestCase(S3DatastoreButlerTestCase):
         dropped = False
         for i in range(3):
             try:
-                connection.execute(f'DROP DATABASE {self.root}')
+                connection.execute(f'DROP DATABASE {self.curDBname}')
                 break
             except OperationalError as e:
                 time.sleep(1)
@@ -720,7 +692,7 @@ class S3RdsButlerTestCase(S3DatastoreButlerTestCase):
                     header = frmtstr.format(*columns)
                     queryCols = ", ".join(columns)
                     res = connection.execute((f'SELECT {queryCols} FROM pg_stat_activity WHERE '
-                                              f'datname = \'{self.root}\' and pid <> pg_backend_pid();'))
+                                              f'datname = \'{self.curDBname}\' and pid <> pg_backend_pid();'))
 
                     details = header
                     for row in res:

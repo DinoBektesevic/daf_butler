@@ -91,7 +91,7 @@ class PickleFormatter(FileFormatter):
 
         Returns
         -------
-        data : `object`
+        inMemoryDataset : `object`
             Either data as Python object read from the pickled string, or None
             if the string could not be read.
         """

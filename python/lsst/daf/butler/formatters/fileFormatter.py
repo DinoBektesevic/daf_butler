@@ -260,7 +260,7 @@ class FileFormatter(Formatter):
 
         Returns
         -------
-        serializedDataset : `str`
+        serializedDataset : `bytes`
             bytes representing the serialized dataset.
         """
         if not hasattr(self, '_toBytes'):

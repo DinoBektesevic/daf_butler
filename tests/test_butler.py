@@ -27,15 +27,12 @@ import unittest
 import tempfile
 import shutil
 import pickle
-import random
-import string
 
 from lsst.daf.butler.core.safeFileIo import safeMakeDir
 from lsst.daf.butler import Butler, Config, ButlerConfig
 from lsst.daf.butler import StorageClassFactory
 from lsst.daf.butler import DatasetType, DatasetRef
 from lsst.daf.butler import FileTemplateValidationError, ValidationError
-from lsst.daf.butler import RegistryConfig, ConnectionStringBuilder
 
 from examplePythonTypes import MetricsExample
 from lsst.daf.butler.core.repoRelocation import BUTLER_ROOT_TAG
@@ -546,133 +543,6 @@ class ButlerConfigNoRunTestCase(unittest.TestCase):
     def tearDown(self):
         if self.root is not None and os.path.exists(self.root):
             shutil.rmtree(self.root, ignore_errors=True)
-
-
-class RDSRegistryButlerTestCase(ButlerTests, unittest.TestCase):
-    """PosixDatastore using an RDS PostgreSQL Registry."""
-    configFile = os.path.join(TESTDIR, "config/basic/butler-rds.yaml")
-    fullConfigKey = ".datastore.formatters"
-    validationCanFail = True
-
-    # skip the stringification tests
-    datastoreStr = None
-    datastoreName = None
-    registryStr = None
-
-    def genRandomDBName(self):
-        """Returns a random string of len 20 to serve as a DB
-        name for the temporary bucket repo.
-        """
-        rndstr = ''.join(
-            random.choice(string.ascii_lowercase) for _ in range(20)
-        )
-        return rndstr
-
-    def setUp(self):
-        if self.useTempRoot:
-            self.root = tempfile.mkdtemp(dir=TESTDIR)
-            self.tmpConfigFile = os.path.join(self.root, "butler.yaml")
-        else:
-            self.root = None
-            self.tmpConfigFile = self.configFile
-
-        # [SANITY WARNING] - Multiple DBs as individual registries
-        # Sqlalchemy won't be able to create a new db by just connecting to a
-        # new name. In PostgreSql CREATE DATABSE statement can not be issued
-        # within a transaction. So pure execute won't work since it creates a
-        # Connection implicitly. That Connection needs to be closed before
-        # CREATE statement can be issued. This means users need to have
-        # sufficient permissions to create DBs if they want to run this test.
-        from sqlalchemy import create_engine
-
-        # First, construct the connection string, create a new DB name. We are
-        # initially connecting to default super-user: postgres; this will get
-        # replaced by a new name when Yaml config gets written to new repo
-        config = Config(self.configFile)
-        self.curDBname = self.genRandomDBName()
-        constr = ConnectionStringBuilder.fromConfig(self.configFile)
-
-        # Second, connect, commit to drop out of transaction scope,
-        # create new DB
-        engine = create_engine(constr)
-        connection = engine.connect()
-        connection.execute('commit')
-        connection.execute(f'CREATE DATABASE {self.curDBname}')
-        connection.close()
-
-        # Third, now that we know that DB exists, replace the connection
-        # string in Yaml config file with the new one, create new repo
-        config['.registry.registry.dbname'] = self.curDBname
-        Butler.makeRepo(self.root, config=config)
-        self.tmpConfigFile = os.path.join(self.root, "butler.yaml")
-
-    def tearDown(self):
-        if self.root is not None and os.path.exists(self.root):
-            shutil.rmtree(self.root, ignore_errors=True)
-
-        # [SANITY WARNING #2] - Multiple DBs as repositories strike back
-        # The quickest way to undo setup is to just drop the DB. PostgreSql
-        # won't allow dropping the DB as long as there are users connected to
-        # it. RDS service seems to do a lot in the background, so there is
-        # always a process attached. So we need to ban all future connections,
-        # purge current ones, and then attempt to drop the DB. Sleep and
-        # repeat 3 times to give puring a chance.
-        from sqlalchemy.exc import OperationalError
-        from sqlalchemy import create_engine
-
-        # First, construct the connection string. We connect as default super-
-        # user (not to the current repo registry!)
-        regConfig = RegistryConfig(self.configFile)
-        constr = ConnectionStringBuilder.fromConfig(regConfig)
-
-        # Second, commit to drop out of transaction scope
-        engine = create_engine(constr)
-        connection = engine.connect()
-        connection.execute("commit")
-
-        # Third, ban all future connections; 'commit' to end transaction scope.
-        connection.execute(f'REVOKE CONNECT ON DATABASE "{self.curDBname}" FROM public;')
-        connection.execute('commit')
-
-        # Fourth, kill all currently connected processes, except ours.
-        # IT IS INCREDIBLY IMPORTANT that the db name is single-quoted.
-        connection.execute((f'SELECT pid, pg_terminate_backend(pid) '
-                            'FROM pg_stat_activity WHERE '
-                            f'datname = \'{self.curDBname}\' and pid <> pg_backend_pid();'))
-        connection.execute('commit')
-
-        # Fift, attempt to drop the table. It does not seem like processes
-        # detach *immediatelly* (or quickly), so give them some time
-        import time
-        for i in range(3):
-            try:
-                connection.execute('commit')
-                connection.execute(f'DROP DATABASE {self.curDBname}')
-                break
-            except OperationalError as e:
-                time.sleep(1)
-                # if database isn't dropped on 3 attempts add details for
-                # debugging and reraise the error
-                if i >= 2:
-                    columns = ('datid', 'datname', 'pid', 'usesysid', 'usename',
-                               'application_name', 'client_addr', 'client_hostname',
-                               'client_port', 'wait_event_type', 'wait_event', 'state',
-                               'query')
-                    places = ['{'+str(i)+':15}' for i in range(0, len(columns))]
-                    frmtstr = "".join(places)+"\n"
-                    header = frmtstr.format(*columns)
-                    queryCols = ", ".join(columns)
-                    res = connection.execute((f'SELECT {queryCols} FROM pg_stat_activity WHERE '
-                                              f'datname = \'{self.curDBname}\' and pid <> pg_backend_pid();'))
-
-                    details = header
-                    for row in res:
-                        row = [str(val) for val in row.values()] if None in row.values() else row.values()
-                        details += frmtstr.format(*row)
-
-                    e.add_detail(details)
-                    raise e
-        connection.close()
 
 
 if __name__ == "__main__":

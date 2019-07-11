@@ -35,6 +35,8 @@ from lsst.daf.butler import Butler, Config, ButlerConfig
 from lsst.daf.butler import StorageClassFactory
 from lsst.daf.butler import DatasetType, DatasetRef
 from lsst.daf.butler import FileTemplateValidationError, ValidationError
+from lsst.daf.butler import RegistryConfig, ConnectionStringBuilder
+
 from examplePythonTypes import MetricsExample
 from lsst.daf.butler.core.repoRelocation import BUTLER_ROOT_TAG
 
@@ -547,21 +549,10 @@ class ButlerConfigNoRunTestCase(unittest.TestCase):
 
 
 class RDSRegistryButlerTestCase(ButlerTests, unittest.TestCase):
-    """PosixDatastore using an RDS PostgreSQL Registry specialization of a butler"""
+    """PosixDatastore using an RDS PostgreSQL Registry."""
     configFile = os.path.join(TESTDIR, "config/basic/butler-rds.yaml")
     fullConfigKey = ".datastore.formatters"
     validationCanFail = True
-
-    # there are too many important parameters in the db string that need to
-    # carry over to here, so instead of making people copy-paste it on every change
-    # read it from config and re-format it to something useful. Caveat: the RDS name can,
-    # but does not have to be, the same as the dbname, we want to avoid replacing anything
-    # except the dbname that's why we manually add the name at the end instead of replace().
-    config =  Config(configFile)
-    tmpconstr = config['.registry.registry.db']
-    defaultName = tmpconstr.split('/')[-1]
-    constr = tmpconstr[:-len(defaultName)] + '{dbname}'
-    connectionStr = constr
 
     # skip the stringification tests
     datastoreStr = None
@@ -586,43 +577,32 @@ class RDSRegistryButlerTestCase(ButlerTests, unittest.TestCase):
             self.tmpConfigFile = self.configFile
 
         # [SANITY WARNING] - Multiple DBs as individual registries
-        # Sqlalchemy won't be able to create a new db by just connecting to a new name.
-        # In PostgreSql CREATE DATABSE statement can not be issued within a transaction.
-        # So pure execute won't work since it creates a Connection implicitly. That Connection
-        # needs to be closed before CREATE statement can be issued. This means users need to have
+        # Sqlalchemy won't be able to create a new db by just connecting to a
+        # new name. In PostgreSql CREATE DATABSE statement can not be issued
+        # within a transaction. So pure execute won't work since it creates a
+        # Connection implicitly. That Connection needs to be closed before
+        # CREATE statement can be issued. This means users need to have
         # sufficient permissions to create DBs if they want to run this test.
         from sqlalchemy import create_engine
-        import urllib.parse as urlparse
-        import configparser
 
-        # First, replace the default connection string with a db that we know will always exist.
-        # The name will always be last, but its easier to just replace it than to deconstruct and
-        # then reconstruct the whole string
-        defaultName = self.connectionStr.split('/')[-1]
-        #constr = self.connectionStr.replace(defaultName, 'postgres')
-        constr = self.connectionStr
+        # First, construct the connection string, create a new DB name. We are
+        # initially connecting to default super-user: postgres; this will get
+        # replaced by a new name when Yaml config gets written to new repo
+        config = Config(self.configFile)
+        self.curDBname = self.genRandomDBName()
+        constr = ConnectionStringBuilder.fromConfig(self.configFile)
 
-        # Second, get the local connection credentials from ~/.rds
-        parsed = urlparse.urlparse(constr)
-        localconf = configparser.ConfigParser()
-        localconf.read(os.path.expanduser('~/.rds/credentials'))
-
-        username = localconf[parsed.username]['username']
-        password = localconf[parsed.username]['password']
-        constr = constr.replace(parsed.username, f'{username}:{password}')
-
-        # Third, connect as that user, commit to drop out of transaction scope and create new DB
-        engine = create_engine(constr.replace(defaultName, 'postgres'))
+        # Second, connect, commit to drop out of transaction scope,
+        # create new DB
+        engine = create_engine(constr)
         connection = engine.connect()
         connection.execute('commit')
-        self.curDBname = self.genRandomDBName()
         connection.execute(f'CREATE DATABASE {self.curDBname}')
         connection.close()
 
-        # Finally, now that we know that DB exists, replace the connection string from yaml
-        # config file for a one, that points to newly created temporary DB, and create new repo
-        config = Config(self.configFile)
-        config['.registry.registry.db'] = constr.replace(defaultName, self.curDBname)
+        # Third, now that we know that DB exists, replace the connection
+        # string in Yaml config file with the new one, create new repo
+        config['.registry.registry.dbname'] = self.curDBname
         Butler.makeRepo(self.root, config=config)
         self.tmpConfigFile = os.path.join(self.root, "butler.yaml")
 
@@ -631,58 +611,49 @@ class RDSRegistryButlerTestCase(ButlerTests, unittest.TestCase):
             shutil.rmtree(self.root, ignore_errors=True)
 
         # [SANITY WARNING #2] - Multiple DBs as repositories strike back
-        # We have to undo everything done in setup. The quickest way is to just drop the
-        # temporary database. PostgreSql won't allow dropping the DB as long as there are
-        # users connected to it. RDS service seems to do a lot in the background with these
-        # DBs since seemingly there is always a process attached. So we need to ban all future
-        # connections to the DB, kill all current connections to it, and then attempt to drop
-        # the DB.
+        # The quickest way to undo setup is to just drop the DB. PostgreSql
+        # won't allow dropping the DB as long as there are users connected to
+        # it. RDS service seems to do a lot in the background, so there is
+        # always a process attached. So we need to ban all future connections,
+        # purge current ones, and then attempt to drop the DB. Sleep and
+        # repeat 3 times to give puring a chance.
         from sqlalchemy.exc import OperationalError
         from sqlalchemy import create_engine
-        import urllib.parse as urlparse
-        import configparser
 
-        # First, replace the default connection string with a db that we know will always exist.
-        defaultName = self.connectionStr.split('/')[-1]
-        constr = self.connectionStr.replace(defaultName, 'postgres')
+        # First, construct the connection string. We connect as default super-
+        # user (not to the current repo registry!)
+        regConfig = RegistryConfig(self.configFile)
+        constr = ConnectionStringBuilder.fromConfig(regConfig)
 
-        # Second, get the local connection credentials from ~/.rds
-        parsed = urlparse.urlparse(constr)
-        localconf = configparser.ConfigParser()
-        localconf.read(os.path.expanduser('~/.rds/credentials'))
-
-        username = localconf[parsed.username]['username']
-        password = localconf[parsed.username]['password']
-        constr = constr.replace(parsed.username, f'{username}:{password}')
-
-        # Third, connect as that user, commit to drop out of transaction scope and create new DB
+        # Second, commit to drop out of transaction scope
         engine = create_engine(constr)
         connection = engine.connect()
         connection.execute("commit")
 
-        # Fourth, ban all future connections. Make sure to end transaction scope.
+        # Third, ban all future connections; 'commit' to end transaction scope.
         connection.execute(f'REVOKE CONNECT ON DATABASE "{self.curDBname}" FROM public;')
         connection.execute('commit')
 
-        # Fifth, kill all currently connected processes, except ours.
+        # Fourth, kill all currently connected processes, except ours.
         # IT IS INCREDIBLY IMPORTANT that the db name is single-quoted.
         connection.execute((f'SELECT pid, pg_terminate_backend(pid) '
                             'FROM pg_stat_activity WHERE '
                             f'datname = \'{self.curDBname}\' and pid <> pg_backend_pid();'))
         connection.execute('commit')
 
-        # Sixth, attempt to drop the table. It does not seem like processes detach *immediatelly*
-        # always, so give them some time
+        # Fift, attempt to drop the table. It does not seem like processes
+        # detach *immediatelly* (or quickly), so give them some time
         import time
-        dropped = False
         for i in range(3):
             try:
+                connection.execute('commit')
                 connection.execute(f'DROP DATABASE {self.curDBname}')
                 break
             except OperationalError as e:
                 time.sleep(1)
-                # if database isn't dropped on 3 attempts add details for debugging and reraise it
-                if i>=2:
+                # if database isn't dropped on 3 attempts add details for
+                # debugging and reraise the error
+                if i >= 2:
                     columns = ('datid', 'datname', 'pid', 'usesysid', 'usename',
                                'application_name', 'client_addr', 'client_hostname',
                                'client_port', 'wait_event_type', 'wait_event', 'state',
@@ -701,8 +672,8 @@ class RDSRegistryButlerTestCase(ButlerTests, unittest.TestCase):
 
                     e.add_detail(details)
                     raise e
-            connection.execute('commit')
         connection.close()
+
 
 if __name__ == "__main__":
     unittest.main()

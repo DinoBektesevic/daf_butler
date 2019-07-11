@@ -144,7 +144,7 @@ class SqlRegistry(Registry):
         have a very good reason not to, subclasses that override this method
         should do the same.
         """
-        return create_engine(self.config["db"], poolclass=NullPool)
+        return create_engine(ConnectionStringBuilder.fromConfig(self.config), poolclass=NullPool)
 
     def _createConnection(self, engine):
         """Create and return a `sqlalchemy.Connection` for this `Registry`.

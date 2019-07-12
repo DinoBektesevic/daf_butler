@@ -21,10 +21,12 @@
 
 __all__ = ("iterable", "allSlots", "slotValuesAreEqual", "slotValuesToHash",
            "getFullTypeName", "getInstanceOf", "Singleton", "transactional",
-           "getObjectSize", "stripIfNotNone", "PrivateConstructorMeta")
+           "getObjectSize", "stripIfNotNone", "PrivateConstructorMeta",
+           "NamedKeyDict")
 
 import sys
 import functools
+from collections.abc import MutableMapping
 
 from lsst.utils import doImport
 

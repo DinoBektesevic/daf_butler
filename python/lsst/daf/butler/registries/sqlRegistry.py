@@ -41,6 +41,7 @@ from ..core.run import Run
 from ..core.storageClass import StorageClassFactory
 from ..core.config import Config
 from ..core.dimensions import DataId, Dimension
+from ..core.registry import ConnectionStringBuilder
 from .sqlRegistryDatabaseDict import SqlRegistryDatabaseDict
 
 

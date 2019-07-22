@@ -79,12 +79,12 @@ class PickleFormatter(FileFormatter):
         with open(fileDescriptor.location.path, "wb") as fd:
             fd.write(self._toBytes(inMemoryDataset))
 
-    def _fromBytes(self, inMemoryDataset, pytype=None):
+    def _fromBytes(self, serializedDataset, pytype=None):
         """Read the bytes object as a python object.
 
         Parameters
         ----------
-        pickledDataset : `bytes`
+        serializedDataset : `bytes`
             Bytes object to unserialize.
         pytype : `class`, optional
             Not used by this implementation.
@@ -92,11 +92,11 @@ class PickleFormatter(FileFormatter):
         Returns
         -------
         inMemoryDataset : `object`
-            Either data as Python object read from the pickled string, or None
-            if the string could not be read.
+            The requested data as a object, or None if the string could
+            not be read.
         """
         try:
-            data = pickle.loads(inMemoryDataset)
+            data = pickle.loads(serializedDataset)
         except pickle.PicklingError:
             data = None
 
@@ -112,7 +112,7 @@ class PickleFormatter(FileFormatter):
 
         Returns
         -------
-        data : `bytes`
+        serializedDataset : `bytes`
             Bytes object representing the pickled object.
 
         Raises

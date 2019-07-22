@@ -92,7 +92,7 @@ class Formatter(metaclass=ABCMeta):
 
         Parameters
         ----------
-        dataset : `bytes`
+        serializedDataset : `bytes`
             Bytes object to unserialize.
         fileDescriptor : `FileDescriptor`
             Identifies type to read it as and parameters to be used for
@@ -107,12 +107,6 @@ class Formatter(metaclass=ABCMeta):
         inMemoryDataset : `object`
             The requested data as a Python object. The type of object
             is controlled by the specific formatter.
-
-        Raises
-        ------
-        ValueError
-            Component requested but this Dataset does not seem to be a concrete
-            composite.
         """
         raise NotImplementedError("Type does not support reading from bytes.")
 
@@ -129,8 +123,8 @@ class Formatter(metaclass=ABCMeta):
 
         Returns
         -------
-        serializedDataset : `str`
-            bytes representing the serialized dataset.
+        serializedDataset : `bytes`
+            Bytes representing the serialized dataset.
         """
         raise NotImplementedError("Type does not support writing to bytes.")
 

@@ -24,6 +24,7 @@
 __all__ = ("BUTLER_ROOT_TAG", "replaceRoot")
 
 import os.path
+from lsst.daf.butler import ButlerURI
 
 BUTLER_ROOT_TAG = "<butlerRoot>"
 """The special string to be used in configuration files to indicate that
@@ -53,7 +54,6 @@ def replaceRoot(configRoot, butlerRoot):
         New configuration string, with the root tag replaced with the butler
         root if that tag was present in the supplied configuration root.
     """
-
     if butlerRoot is None:
         butlerRoot = os.path.curdir
 

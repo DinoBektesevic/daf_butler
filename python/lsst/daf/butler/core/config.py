@@ -74,7 +74,8 @@ class Loader(yaml.CSafeLoader):
 
     def __init__(self, stream):
         super().__init__(stream)
-        self._root = os.path.split(stream.name)[0]
+        #self._root = os.path.split(stream.name)[0]
+        self._root = ButlerURI(stream.name)
         Loader.add_constructor("!include", Loader.include)
 
     def include(self, node):
@@ -98,11 +99,26 @@ class Loader(yaml.CSafeLoader):
             raise yaml.constructor.ConstructorError
 
     def extractFile(self, filename):
-        filepath = os.path.join(self._root, filename)
-        log.debug("Opening YAML file via !include: %s", filepath)
-        with open(filepath, "r") as f:
-            return yaml.load(f, Loader)
+        fileuri = copy.copy(self._root)
+        fileuri.updateFile(filename)
+        log.debug("Opening YAML file via !include: %s", fileuri)
+        
+        if fileuri.scheme == "file":
+            with open(fileuri.ospath, "r") as f:
+                return yaml.load(f, Loader)
+        elif fileuri.scheme == "s3":
+            s3 = boto3.client("s3")
+            try:
+                response = s3.get_object(Bucket=fileuri.netloc, Key=fileuri.relativeToNetloc)
+            except (s3.exceptions.NoSuchKey, s3.exceptions.NoSuchBucket) as err:
+                raise FileNotFoundError(f'No such file or directory: {path}') from err
 
+            # boto3 response is a `StreamingBody`, but not a valid Python IOStream.
+            # Loader will raise an error that the stream has no name. A hackish
+            # solution is to name it explicitly.
+            response['Body'].name = fileuri.geturl()            
+            return yaml.load(response['Body'], Loader)
+        
 
 class Config(collections.abc.MutableMapping):
     r"""Implements a datatype that is used by `Butler` for configuration
@@ -894,7 +910,7 @@ class Config(collections.abc.MutableMapping):
             for key in toCopy:
                 if key in localConfig and not overwrite:
                     log.debug("Not overriding key '%s' from defaults in config %s",
-                              key, value, localConfig.__class__.__name__)
+                              key, localConfig.__class__.__name__)
                 else:
                     localConfig[key] = localFullConfig[key]
 

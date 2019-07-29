@@ -194,7 +194,7 @@ class Butler:
         config = Config(config)
 
         # If we are creating a new repo from scratch with relative roots,
-        # do not propagate an explicit root from the config file
+        # do not propagate an explicit root from the config file.
         if "root" in config:
             del config["root"]
 

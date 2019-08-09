@@ -49,7 +49,7 @@ from datasetsHelper import FitsCatalogDatasetsHelper, DatasetTestHelper
 try:
     import lsst.afw.image
     from lsst.afw.image import LOCAL
-    from lsst.geom import Box2I, Point2I
+    from lsst.geom import Box2I, Point2I, Extent2I
 except ImportError:
     lsst.afw = None
 
@@ -129,8 +129,7 @@ class ButlerFitsTests(FitsCatalogDatasetsHelper, DatasetTestHelper):
             #                       compRef.datasetType.storageClass.pytype)
             compsRead[compName] = component
         # Simple check of WCS
-        bbox = lsst.afw.geom.Box2I(lsst.afw.geom.Point2I(0, 0),
-                                   lsst.afw.geom.Extent2I(9, 9))
+        bbox = Box2I(Point2I(0, 0), Extent2I(9, 9))
         self.assertWcsAlmostEqualOverBBox(compsRead["wcs"], exposure.getWcs(), bbox)
 
         # With parameters
@@ -165,12 +164,12 @@ class S3DatastoreButlerTestCase(ButlerFitsTests, lsst.utils.tests.TestCase):
     """
     configFile = os.path.join(TESTDIR, "config/basic/butler-s3store.yaml")
 
-    bucketName = 'anybucketname'
+    bucketName = "anybucketname"
     """Name of the Bucket that will be used in the tests. The name is read from
     the config file used with the tests during set-up.
     """
 
-    root = 'butlerRoot/'
+    root = "butlerRoot/"
     """Root repository directory expected to be used in case useTempRoot=False.
     Otherwise the root is set to a 20 characters long randomly generated string
     during set-up.
@@ -183,24 +182,24 @@ class S3DatastoreButlerTestCase(ButlerFitsTests, lsst.utils.tests.TestCase):
         This is equivalent to tempfile.mkdtemp as this is what self.root
         becomes when useTempRoot is True.
         """
-        rndstr = ''.join(
+        rndstr = "".join(
             random.choice(string.ascii_uppercase + string.digits) for _ in range(20)
         )
-        return rndstr + '/'
+        return rndstr + "/"
 
     def setUp(self):
         config = Config(self.configFile)
-        uri = ButlerURI(config['.datastore.datastore.root'])
+        uri = ButlerURI(config[".datastore.datastore.root"])
         self.bucketName = uri.netloc
 
         if self.useTempRoot:
             self.root = self.genRoot()
-        rooturi = f's3://{self.bucketName}/{self.root}'
-        config.update({'datastore': {'datastore': {'root': rooturi}}})
+        rooturi = f"s3://{self.bucketName}/{self.root}"
+        config.update({"datastore": {"datastore": {"root": rooturi}}})
 
         # MOTO needs to know that we expect Bucket bucketname to exist
         # (this used to be the class attribute bucketName)
-        s3 = boto3.resource('s3')
+        s3 = boto3.resource("s3")
         s3.create_bucket(Bucket=self.bucketName)
 
         self.datastoreStr = f"datastore={self.root}"
@@ -209,7 +208,7 @@ class S3DatastoreButlerTestCase(ButlerFitsTests, lsst.utils.tests.TestCase):
         self.tmpConfigFile = os.path.join(rooturi, "butler.yaml")
 
     def tearDown(self):
-        s3 = boto3.resource('s3')
+        s3 = boto3.resource("s3")
         bucket = s3.Bucket(self.bucketName)
         try:
             bucket.objects.all().delete()

@@ -61,23 +61,21 @@ class PickleFormatter(FileFormatter):
 
         return data
 
-    def _writeFile(self, inMemoryDataset, fileDescriptor):
+    def _writeFile(self, inMemoryDataset):
         """Write the in memory dataset to file on disk.
 
         Parameters
         ----------
         inMemoryDataset : `object`
             Object to serialize.
-        fileDescriptor : `FileDescriptor`
-            Details of the file to be written.
 
         Raises
         ------
         Exception
             The file could not be written.
         """
-        with open(fileDescriptor.location.path, "wb") as fd:
-            fd.write(self._toBytes(inMemoryDataset))
+        with open(self.fileDescriptor.location.path, "wb") as fd:
+            pickle.dump(inMemoryDataset, fd, protocol=-1)
 
     def _fromBytes(self, serializedDataset, pytype=None):
         """Read the bytes object as a python object.

@@ -74,7 +74,6 @@ class Loader(yaml.CSafeLoader):
 
     def __init__(self, stream):
         super().__init__(stream)
-        #self._root = os.path.split(stream.name)[0]
         self._root = ButlerURI(stream.name)
         Loader.add_constructor("!include", Loader.include)
 
@@ -102,16 +101,18 @@ class Loader(yaml.CSafeLoader):
         fileuri = copy.copy(self._root)
         fileuri.updateFile(filename)
         log.debug("Opening YAML file via !include: %s", fileuri)
-        
+
         if fileuri.scheme == "file":
             with open(fileuri.ospath, "r") as f:
                 return yaml.load(f, Loader)
         elif fileuri.scheme == "s3":
+            if boto3 is None:
+                raise ModuleNotFoundError("Could not find boto3. Are you sure it is installed?")
             s3 = boto3.client("s3")
             try:
-                response = s3.get_object(Bucket=fileuri.netloc, Key=fileuri.relativeToNetloc)
+                response = s3.get_object(Bucket=fileuri.netloc, Key=fileuri.relativeToPathRoot)
             except (s3.exceptions.NoSuchKey, s3.exceptions.NoSuchBucket) as err:
-                raise FileNotFoundError(f'No such file or directory: {path}') from err
+                raise FileNotFoundError(f'No such file or directory: {fileuri}') from err
 
             # boto3 response is a `StreamingBody`, but not a valid Python IOStream.
             # Loader will raise an error that the stream has no name. A hackish
@@ -241,14 +242,14 @@ class Config(collections.abc.MutableMapping):
         """
         uri = ButlerURI(path)
         if uri.path.endswith("yaml"):
-            if uri.scheme == 's3':
-                self.__initFromS3YamlFile(path)
+            if uri.scheme == "s3":
+                self.__initFromS3YamlFile(uri.geturl())
             else:
-                self.__initFromYamlFile(path)
+                self.__initFromYamlFile(uri.ospath)
         else:
             raise RuntimeError("Unhandled config file type:%s" % uri)
 
-    def __initFromS3YamlFile(self, path):
+    def __initFromS3YamlFile(self, url):
         """Load a file at a given S3 Bucket uri and attempts to load it from
         yaml.
 
@@ -258,22 +259,22 @@ class Config(collections.abc.MutableMapping):
             To a persisted config file.
         """
         if boto3 is None:
-            raise ModuleNotFoundError('boto3 not found.'
-                                      'Are you sure it is installed?')
+            raise ModuleNotFoundError("boto3 not found."
+                                      "Are you sure it is installed?")
 
-        uri = ButlerURI(path)
-        s3 = boto3.client('s3')
+        uri = ButlerURI(url)
+        s3 = boto3.client("s3")
         try:
-            response = s3.get_object(Bucket=uri.netloc, Key=uri.relativeToNetloc)
+            response = s3.get_object(Bucket=uri.netloc, Key=uri.relativeToPathRoot)
         except (s3.exceptions.NoSuchKey, s3.exceptions.NoSuchBucket) as err:
-            raise FileNotFoundError(f'No such file or directory: {path}') from err
+            raise FileNotFoundError(f"No such file or directory: {uri}") from err
 
         # boto3 response is a `StreamingBody`, but not a valid Python IOStream.
         # Loader will raise an error that the stream has no name. A hackish
         # solution is to name it explicitly.
-        response['Body'].name = path
-        self.__initFromYaml(response['Body'])
-        response['Body'].close()
+        response["Body"].name = url
+        self.__initFromYaml(response["Body"])
+        response["Body"].close()
 
     def __initFromYamlFile(self, path):
         """Opens a file at a given path and attempts to load it in from yaml.
@@ -773,7 +774,7 @@ class Config(collections.abc.MutableMapping):
         if data:
             yaml.safe_dump(data, output, default_flow_style=False)
 
-    def dumpToUri(self, uri, updateFile=True, defaultFileName='butler.yaml'):
+    def dumpToUri(self, uri, updateFile=True, defaultFileName="butler.yaml"):
         """Writes the config to location pointed to by given URI.
 
         Currently supports 's3' and 'file' URI schemes.
@@ -792,17 +793,17 @@ class Config(collections.abc.MutableMapping):
         if isinstance(uri, str):
             uri = ButlerURI(uri)
 
-        if uri.scheme == 'file':
+        if uri.scheme == "file":
             if os.path.isdir(uri.path) and updateFile:
                 uri = ButlerURI(os.path.join(uri.ospath, defaultFileName))
             self.dumpToFile(uri.ospath)
-        elif uri.scheme == 's3':
+        elif uri.scheme == "s3":
             head, filename = posixpath.split(uri.path)
             if "." not in filename:
                 uri.updateFile(defaultFileName)
-            self.dumpToS3File(uri.netloc, uri.relativeToNetloc)
+            self.dumpToS3File(uri.netloc, uri.relativeToPathRoot)
         else:
-            raise ValueError(f'Unrecognized URI scheme: {uri.scheme}')
+            raise ValueError(f"Unrecognized URI scheme: {uri.scheme}")
 
     def dumpToFile(self, path):
         """Writes the config to a file.
@@ -829,7 +830,7 @@ class Config(collections.abc.MutableMapping):
             raise ModuleNotFoundError("Could not find boto3. "
                                       "Are you sure it is installed?")
 
-        s3 = boto3.client('s3')
+        s3 = boto3.client("s3")
         with io.StringIO() as stream:
             self.dump(stream)
             stream.seek(0)
@@ -1027,9 +1028,8 @@ class ConfigSubset(Config):
             if pytype is not None:
                 try:
                     cls = doImport(pytype)
-                except ImportError:
-                    raise RuntimeError("Failed to import cls '{}' for config {}".format(pytype,
-                                                                                        type(self)))
+                except ImportError as e:
+                    raise RuntimeError(f"Failed to import cls '{pytype}' for config {type(self)}") from e
                 defaultsFile = cls.defaultConfigFile
                 if defaultsFile is not None:
                     self._updateWithConfigsFromPath(fullSearchPath, defaultsFile)

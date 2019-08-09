@@ -144,16 +144,22 @@ class ButlerURI:
     @property
     def ospath(self):
         """Path component of the URI localized to current OS."""
+        if self.scheme == 's3':
+            raise AttributeError('S3 URIs have no OS path.')
         return posix2os(self._uri.path)
 
     @property
-    def relativeToNetloc(self):
+    def relativeToPathRoot(self):
         """Returns path relative to network location.
 
-        Effectively, this is the path property with posix separator stipped
+        Effectively, this is the path property with posix separator stripped
         from the left hand side of the path.
         """
-        return self._uri.path.lstrip('/')
+        if not self.scheme:
+            p = PurePath(self.path)
+        else:
+            p = PurePosixPath(self.path)
+        return str(p.relative_to(p.root))
 
     @property
     def fragment(self):
@@ -299,7 +305,7 @@ class ButlerURI:
                     replacements['netloc'] = 'localhost'
 
             elif parsed.scheme == "file":
-                # file URI implies POSIX path separators so split as posix,
+                # file URI implies POSIX path separators so split as POSIX,
                 # then join as os, and convert to abspath. Do not handle
                 # home directories since "file" scheme is explicitly documented
                 # to not do tilde expansion.
@@ -371,6 +377,11 @@ class Location:
     def __str__(self):
         return self.uri
 
+    def __repr__(self):
+        uri = self._datastoreRootUri.geturl()
+        path = self._path
+        return f"{self.__class__.__name__}({uri!r}, {path!r})"
+
     @property
     def uri(self):
         """URI string corresponding to fully-specified location in datastore.
@@ -408,14 +419,19 @@ class Location:
         return self._datastoreRootUri.netloc
 
     @property
-    def relativeToNetloc(self):
+    def relativeToPathRoot(self):
         """Returns the path component of the URI relative to the network
         location.
 
-        Effectively, this is the path property with posix separator stipped
+        Effectively, this is the path property with POSIX separator stripped
         from the left hand side of the path.
         """
-        return self.path.lstrip('/')
+        if self._datastoreRootUri.scheme == 'file' or not self._datastoreRootUri.scheme:
+            p = PurePath(os2posix(self.path))
+        else:
+            p = PurePosixPath(self.path)
+        stripped = p.relative_to(p.root)
+        return str(posix2os(stripped))
 
     def updateExtension(self, ext):
         """Update the file extension associated with this `Location`.

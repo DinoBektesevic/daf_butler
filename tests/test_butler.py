@@ -437,15 +437,6 @@ class PosixDatastoreButlerTestCase(ButlerTests, unittest.TestCase):
         """
         return os.path.exists(os.path.join(root, path))
 
-    def checkFileExists(self, root, path):
-        """Checks if file exists at a given path (relative to root).
-
-        Test testPutTemplates verifies actual physical existance of the files
-        in the requested location. For POSIXDatastore this test is equivalent
-        to `os.path.exists` call.
-        """
-        return os.path.exists(os.path.join(root, path))
-
     def testPutTemplates(self):
         storageClass = self.storageClassFactory.getStorageClass("StructuredDataNoComponents")
         butler = Butler(self.tmpConfigFile)

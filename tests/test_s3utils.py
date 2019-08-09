@@ -96,6 +96,6 @@ class S3UtilsTestCase(unittest.TestCase):
         self.assertTrue(s3CheckFileExists(uri, client=s3))
         self.assertTrue(s3CheckFileExists(uri))
 
-        
+
 if __name__ == "__main__":
     unittest.main()

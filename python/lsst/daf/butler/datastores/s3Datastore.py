@@ -513,10 +513,9 @@ class S3Datastore(Datastore):
         # must be inside root and source file must be deleted when 'move'd.
         if transfer is None:
             rootUri = ButlerURI(self.root)
-            if srcUri.scheme == "file":
+            if srcUri.scheme != "s3":
                 raise RuntimeError(f"'{srcUri}' is not inside repository root '{rootUri}'. "
-                                   "Ingesting local data to S3Datastore without upload "
-                                   "to S3 is not allowed.")
+                                   "Ingesting data withot upload to to S3 is not allowed.")
             elif srcUri.scheme == "s3":
                 if not srcUri.path.startswith(rootUri.path):
                     raise RuntimeError(f"'{srcUri}' is not inside repository root '{rootUri}'.")
@@ -524,7 +523,7 @@ class S3Datastore(Datastore):
             pathInStore = str(p.relative_to(rootUri.relativeToPathRoot))
             tgtLocation = self.locationFactory.fromPath(pathInStore)
         elif transfer == "move" or transfer == "copy":
-            if srcUri.scheme == "file":
+            if srcUri.scheme == "file" or not srcUri.scheme:
                 # source is on local disk.
                 template = self.templates.getTemplate(ref)
                 location = self.locationFactory.fromPath(template.format(ref))
@@ -548,6 +547,8 @@ class S3Datastore(Datastore):
                 p = pathlib.PurePosixPath(srcUri.relativeToPathRoot)
                 relativeToDatastoreRoot = str(p.relative_to(rootUri.relativeToPathRoot))
                 tgtLocation = self.locationFactory.fromPath(relativeToDatastoreRoot)
+            else:
+                raise NotImplementedError(f"Scheme type {srcUri.scheme} not supported.")
         else:
             raise NotImplementedError(f"Transfer type '{transfer}' not supported.")
 

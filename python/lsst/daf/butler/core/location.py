@@ -144,9 +144,12 @@ class ButlerURI:
     @property
     def ospath(self):
         """Path component of the URI localized to current OS."""
-        if self.scheme == 's3':
-            raise AttributeError('S3 URIs have no OS path.')
-        return posix2os(self._uri.path)
+        if self.scheme == "file":
+            return posix2os(self.path)
+        elif not self.scheme:
+            return self.path
+        else:
+            raise AttributeError(f"{self.scheme} URIs have no OS path.")
 
     @property
     def relativeToPathRoot(self):

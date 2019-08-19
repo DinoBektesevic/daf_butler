@@ -178,7 +178,6 @@ class Butler:
         construct the repository should also be used to construct any Butlers
         to avoid configuration inconsistencies.
         """
-
         if isinstance(config, (ButlerConfig, ConfigSubset)):
             raise ValueError("makeRepo must be passed a regular Config without defaults applied.")
 
@@ -208,6 +207,8 @@ class Butler:
 
         # Use the explicitly set "cls" key in given config, determine the
         # correct registry class from connection url or use the default cls
+        # This needs to be done explicitly here because Registry.setConfigRoot
+        # could differ for different Registries.
         conStrFactory = ConnectionStringFactory()
         if config.get(".registry.cls") is not None:
             registryClass = doImport(config["registry", "cls"])
